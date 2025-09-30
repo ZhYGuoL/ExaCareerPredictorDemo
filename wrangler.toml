@@ -1,3 +1,55 @@
 name = "career-paths"
 main = "src/index.ts"
 compatibility_date = "2025-09-29"
+
+[vars]
+EXA_KEY = "REPLACE_IN_DASHBOARD"
+
+# ============================================================================
+# BINDINGS CONFIGURATION
+# ============================================================================
+# The bindings below are defined in src/types.d.ts but commented out here
+# for local development. To enable them for deployment:
+#
+# 1. Create resources in Cloudflare Dashboard:
+#    - Vectorize index: career-events
+#    - D1 database: app
+#    - Queue: ingest
+#    - R2 bucket: raw-artifacts  
+#    - Durable Object: ReRanker
+#
+# 2. Uncomment the relevant sections below
+# 3. Replace placeholder IDs with actual resource IDs
+# 4. Deploy with: npm run deploy
+# ============================================================================
+
+# [[vectorize]]
+# binding = "VDB"
+# index_name = "career-events"
+
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "app"
+# database_id = "REPLACE_WITH_ACTUAL_DB_ID"
+
+# [[queues.producers]]
+# binding = "INGEST_QUEUE"
+# queue = "ingest"
+
+# [[queues.consumers]]
+# queue = "ingest"
+
+# [[r2_buckets]]
+# binding = "BLOB"
+# bucket_name = "raw-artifacts"
+
+# [[durable_objects.bindings]]
+# name = "RERANKER"
+# class_name = "ReRanker"
+
+# [[migrations]]
+# tag = "v1"
+# new_classes = ["ReRanker"]
+
+# [ai]
+# binding = "AI"
