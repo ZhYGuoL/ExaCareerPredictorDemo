@@ -102,7 +102,8 @@ src/
 ├── types.d.ts        # TypeScript type definitions for bindings
 └── lib/
     ├── exa.ts        # Exa API client wrapper
-    └── extract.ts    # Event extraction from raw text
+    ├── extract.ts    # Event extraction from raw text
+    └── store.ts      # D1 database operations (upsert/insert)
 migrations/
 └── 0001_init.sql     # Initial database schema
 ```
@@ -116,7 +117,8 @@ The project uses a queue-based architecture with multiple stages:
    - Fetches page contents via Exa API
    - Stores raw JSON in R2 (using SHA-1 hash of URL as key)
    - Extracts career events using keyword matching (stub implementation)
-   - [TODO] Store parsed events in D1 database
+   - Upserts candidate record in D1 (using URL hash as ID)
+   - Inserts extracted events into D1 with proper relationships
    - [TODO] Generates embeddings for semantic search
 3. **D1 Database** - Stores normalized career path data
 4. **R2 Storage** - Stores raw page contents for processing

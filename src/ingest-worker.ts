@@ -1,6 +1,7 @@
 import type { Env } from "./types";
 import { exaContents } from "./lib/exa";
 import { extractEvents } from "./lib/extract";
+import { upsertCandidate, insertEvents } from "./lib/store";
 
 async function hashUrl(url: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(url));
@@ -18,10 +19,12 @@ export default {
         console.log("Saved raw:", key);
         
         // Extract events from the page
-        const events = extractEvents(page);
-        console.log(`Extracted ${events.length} events from ${url}`);
+        const candidateId = await hashUrl(url);
+        await upsertCandidate(env, candidateId, url, {});
         
-        // TODO: Store events in D1 database
+        const events = extractEvents(page);
+        await insertEvents(env, candidateId, events);
+        console.log(`Stored ${events.length} events for ${url}`);
         
         msg.ack();
       } catch (err) {
