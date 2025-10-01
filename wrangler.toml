@@ -41,8 +41,10 @@ database_id = "00000000-0000-0000-0000-000000000000"
 binding = "INGEST_QUEUE"
 queue = "ingest"
 
-# [[queues.consumers]]
-# queue = "ingest"
+[[queues.consumers]]
+queue = "ingest"
+max_batch_size = 10
+max_batch_timeout = 30
 
 # [[r2_buckets]]
 # binding = "BLOB"

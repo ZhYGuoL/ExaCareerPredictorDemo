@@ -1,5 +1,6 @@
 import type { Env } from "./types";
 import { exaSearch } from "./lib/exa";
+import ingestWorker from "./ingest-worker";
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -37,8 +38,10 @@ export default {
         // Deduplicate URLs
         urls = Array.from(new Set(urls));
 
-        // Enqueue to INGEST_QUEUE
-        await env.INGEST_QUEUE.send(JSON.stringify(urls));
+        // Enqueue each URL to INGEST_QUEUE
+        await env.INGEST_QUEUE.sendBatch(
+          urls.map(url => ({ body: url }))
+        );
 
         return new Response(JSON.stringify({ enqueued: urls.length }), {
           headers: { "content-type": "application/json" },
@@ -74,6 +77,11 @@ export default {
     }
     
     return new Response("Not found", { status: 404 });
+  },
+
+  // Queue consumer handler
+  async queue(batch: MessageBatch<string>, env: Env) {
+    return ingestWorker.queue(batch, env);
   },
 };
 

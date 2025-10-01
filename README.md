@@ -96,13 +96,23 @@ The project uses Cloudflare D1 with the following tables:
 
 ```
 src/
-├── index.ts        # Main worker entry point with routing
-├── types.d.ts      # TypeScript type definitions for bindings
+├── index.ts          # Main worker entry point with routing + queue consumer
+├── ingest-worker.ts  # Queue consumer for processing ingested URLs
+├── types.d.ts        # TypeScript type definitions for bindings
 └── lib/
-    └── exa.ts      # Exa API client wrapper
+    └── exa.ts        # Exa API client wrapper
 migrations/
-└── 0001_init.sql   # Initial database schema
+└── 0001_init.sql     # Initial database schema
 ```
+
+## Architecture
+
+The project uses a queue-based architecture:
+
+1. **API Worker** (`src/index.ts`) - Receives ingestion requests, searches Exa API, enqueues URLs
+2. **Queue Consumer** (`src/ingest-worker.ts`) - Processes URLs from the queue asynchronously
+3. **D1 Database** - Stores normalized career path data
+4. **Cloudflare Queue** - Decouples ingestion from processing for scalability
 
 ## Deployment
 
