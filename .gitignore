@@ -16,7 +16,7 @@ dist/
 
 # Environment variables
 .env
-.env.local
+    .local
 .env.*.local
 
 # IDE

@@ -14,9 +14,41 @@ export default {
     
     // POST /ingest/start
     if (req.method === "POST" && url.pathname === "/ingest/start") {
-      return new Response(JSON.stringify({ enqueued: 0 }), {
-        headers: { "content-type": "application/json" },
-      });
+      try {
+        const { profile, goal } = await req.json() as {
+          profile: { school: string; major: string };
+          goal: { target_company: string; target_year: string };
+        };
+
+        // Generate queries
+        const queries = [
+          `${profile.school} ${profile.major} ${goal.target_year} SWE internship ${goal.target_company}`,
+          `${profile.major} ${goal.target_year} internship ${goal.target_company} site:linkedin.com/in`,
+          `${profile.school} ${goal.target_year} software engineering intern`,
+        ];
+
+        // Collect URLs from all queries
+        let urls: string[] = [];
+        for (const q of queries) {
+          const res = await exaSearch(env, q, 10) as any;
+          urls.push(...(res.results || []).map((r: any) => r.url));
+        }
+
+        // Deduplicate URLs
+        urls = Array.from(new Set(urls));
+
+        // Enqueue to INGEST_QUEUE
+        await env.INGEST_QUEUE.send(JSON.stringify(urls));
+
+        return new Response(JSON.stringify({ enqueued: urls.length }), {
+          headers: { "content-type": "application/json" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
     }
     
     // GET /debug/exa?q=query

@@ -47,7 +47,7 @@ The server will start on `http://localhost:8787`
 ### Available Endpoints
 
 - `GET /health` - Health check endpoint
-- `POST /ingest/start` - Ingestion placeholder (returns `{ enqueued: 0 }`)
+- `POST /ingest/start` - Start career path ingestion (generates queries, searches Exa, enqueues URLs)
 - `GET /debug/exa?q=<query>` - Test Exa API integration
 
 ### Example Usage
@@ -56,7 +56,21 @@ The server will start on `http://localhost:8787`
 # Health check
 curl http://localhost:8787/health
 
-# Test Exa search
+# Start ingestion with user profile and goal
+curl -X POST http://localhost:8787/ingest/start \
+  -H "content-type: application/json" \
+  -d '{
+    "profile": {
+      "school": "Stanford",
+      "major": "CS"
+    },
+    "goal": {
+      "target_company": "Google",
+      "target_year": "junior"
+    }
+  }'
+
+# Test Exa search directly
 curl "http://localhost:8787/debug/exa?q=internship"
 ```
 
