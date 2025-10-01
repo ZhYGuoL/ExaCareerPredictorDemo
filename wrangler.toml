@@ -27,10 +27,10 @@ EXA_KEY = "REPLACE_IN_DASHBOARD"
 # binding = "VDB"
 # index_name = "career-events"
 
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "app"
-# database_id = "REPLACE_WITH_ACTUAL_DB_ID"
+[[d1_databases]]
+binding = "DB"
+database_name = "app"
+database_id = "00000000-0000-0000-0000-000000000000"
 
 # [[queues.producers]]
 # binding = "INGEST_QUEUE"
