@@ -2,8 +2,13 @@ name = "career-paths"
 main = "src/index.ts"
 compatibility_date = "2025-09-29"
 
-[vars]
-EXA_KEY = "REPLACE_IN_DASHBOARD"
+# ============================================================================
+# ENVIRONMENT VARIABLES
+# ============================================================================
+# For local development: Set EXA_KEY in .dev.vars file (not committed to git)
+# For production: Set as a secret via Cloudflare Dashboard or:
+#   wrangler secret put EXA_KEY
+# ============================================================================
 
 # ============================================================================
 # BINDINGS CONFIGURATION
