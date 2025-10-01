@@ -46,9 +46,9 @@ queue = "ingest"
 max_batch_size = 10
 max_batch_timeout = 30
 
-# [[r2_buckets]]
-# binding = "BLOB"
-# bucket_name = "raw-artifacts"
+[[r2_buckets]]
+binding = "BLOB"
+bucket_name = "raw-artifacts"
 
 # [[durable_objects.bindings]]
 # name = "RERANKER"

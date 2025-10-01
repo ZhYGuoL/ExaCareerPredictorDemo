@@ -49,6 +49,7 @@ The server will start on `http://localhost:8787`
 - `GET /health` - Health check endpoint
 - `POST /ingest/start` - Start career path ingestion (generates queries, searches Exa, enqueues URLs)
 - `GET /debug/exa?q=<query>` - Test Exa API integration
+- `GET /debug/r2?key=<path>` - Retrieve stored R2 object for debugging
 
 ### Example Usage
 
@@ -107,12 +108,17 @@ migrations/
 
 ## Architecture
 
-The project uses a queue-based architecture:
+The project uses a queue-based architecture with multiple stages:
 
 1. **API Worker** (`src/index.ts`) - Receives ingestion requests, searches Exa API, enqueues URLs
-2. **Queue Consumer** (`src/ingest-worker.ts`) - Processes URLs from the queue asynchronously
+2. **Queue Consumer** (`src/ingest-worker.ts`) - Processes URLs from the queue:
+   - Fetches page contents via Exa API
+   - Stores raw JSON in R2 (using SHA-1 hash of URL as key)
+   - [TODO] Parses career events and stores in D1
+   - [TODO] Generates embeddings for semantic search
 3. **D1 Database** - Stores normalized career path data
-4. **Cloudflare Queue** - Decouples ingestion from processing for scalability
+4. **R2 Storage** - Stores raw page contents for processing
+5. **Cloudflare Queue** - Decouples ingestion from processing for scalability
 
 ## Deployment
 

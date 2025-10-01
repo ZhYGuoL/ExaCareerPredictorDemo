@@ -54,6 +54,35 @@ export default {
       }
     }
     
+    // GET /debug/r2?key=raw/hash.json
+    if (req.method === "GET" && url.pathname === "/debug/r2") {
+      const key = url.searchParams.get("key");
+      if (!key) {
+        return new Response(JSON.stringify({ error: "Missing key parameter" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      try {
+        const obj = await env.BLOB.get(key);
+        if (!obj) {
+          return new Response(JSON.stringify({ error: "Object not found" }), {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        const text = await obj.text();
+        return new Response(text, {
+          headers: { "content-type": "application/json" },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+    
     // GET /debug/exa?q=query
     if (req.method === "GET" && url.pathname === "/debug/exa") {
       const query = url.searchParams.get("q");
