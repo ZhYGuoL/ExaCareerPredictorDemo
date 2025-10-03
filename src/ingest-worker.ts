@@ -2,6 +2,7 @@ import type { Env } from "./types";
 import { exaContents } from "./lib/exa";
 import { extractEvents } from "./lib/extract";
 import { upsertCandidate, insertEvents } from "./lib/store";
+import { embedEvent } from "./lib/embed";
 
 async function hashUrl(url: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(url));
@@ -25,6 +26,20 @@ export default {
         const events = extractEvents(page);
         await insertEvents(env, candidateId, events);
         console.log(`Stored ${events.length} events for ${url}`);
+        
+        // Generate embeddings for events
+        for (const e of events) {
+          const text = `${e.role} ${e.org}`.trim();
+          if (text.length > 0) {
+            try {
+              const embedding = await embedEvent(env, text);
+              console.log(`Embedding length: ${embedding.length}`);
+              // TODO: Store embedding in Vectorize
+            } catch (embErr) {
+              console.error("Error generating embedding:", embErr);
+            }
+          }
+        }
         
         msg.ack();
       } catch (err) {

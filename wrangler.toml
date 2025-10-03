@@ -58,5 +58,5 @@ bucket_name = "raw-artifacts"
 # tag = "v1"
 # new_classes = ["ReRanker"]
 
-# [ai]
-# binding = "AI"
+[ai]
+binding = "AI"
