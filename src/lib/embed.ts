@@ -13,3 +13,9 @@ export async function embedEvent(env: Env, text: string): Promise<number[]> {
   return resp.data[0];
 }
 
+export async function upsertEmbedding(env: Env, id: string, vector: number[], metadata: any) {
+  await env.VDB.upsert([
+    { id, values: vector, metadata }
+  ]);
+}
+
