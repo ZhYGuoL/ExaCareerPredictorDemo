@@ -48,6 +48,7 @@ The server will start on `http://localhost:8787`
 
 - `GET /health` - Health check endpoint
 - `POST /ingest/start` - Start career path ingestion (generates queries, searches Exa, enqueues URLs)
+- `POST /rerank` - Re-rank candidate sequences using Soft-DTW (Durable Object)
 - `GET /debug/exa?q=<query>` - Test Exa API integration
 - `GET /debug/r2?key=<path>` - Retrieve stored R2 object for debugging
 
@@ -73,6 +74,17 @@ curl -X POST http://localhost:8787/ingest/start \
 
 # Test Exa search directly
 curl "http://localhost:8787/debug/exa?q=internship"
+
+# Re-rank candidates using Soft-DTW
+curl -X POST http://localhost:8787/rerank \
+  -H "content-type: application/json" \
+  -d '{
+    "query": ["intern at google", "software engineer"],
+    "candidates": [
+      {"id": "c1", "events": ["intern", "engineer", "research"]},
+      {"id": "c2", "events": ["designer", "product", "manager"]}
+    ]
+  }'
 ```
 
 ## Scripts
@@ -99,12 +111,13 @@ The project uses Cloudflare D1 with the following tables:
 src/
 ├── index.ts          # Main worker entry point with routing + queue consumer
 ├── ingest-worker.ts  # Queue consumer for processing ingested URLs
+├── reranker.ts       # Durable Object for Soft-DTW re-ranking
 ├── types.d.ts        # TypeScript type definitions for bindings
 └── lib/
     ├── exa.ts        # Exa API client wrapper
     ├── extract.ts    # Event extraction from raw text
     ├── store.ts      # D1 database operations (upsert/insert)
-    └── embed.ts      # Workers AI embedding generation
+    └── embed.ts      # Workers AI embedding generation + Vectorize storage
 migrations/
 └── 0001_init.sql     # Initial database schema
 ```
@@ -127,6 +140,7 @@ The project uses a queue-based architecture with multiple stages:
 5. **Cloudflare Queue** - Decouples ingestion from processing for scalability
 6. **Vectorize** - Vector database for semantic similarity search across career events
 7. **Workers AI** - Generates text embeddings for semantic understanding
+8. **Durable Object (ReRanker)** - Stateful re-ranking service using Soft-DTW algorithm for sequence similarity
 
 ### Verifying the Pipeline
 
