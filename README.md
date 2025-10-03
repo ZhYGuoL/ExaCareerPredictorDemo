@@ -104,6 +104,7 @@ The project uses Cloudflare D1 with the following tables:
 - `sources` - Scraped data sources
 - `candidates` - Career path candidates
 - `events` - Career timeline events
+- `event_vectors` - Cached event embeddings (768-dim vectors stored as BLOBs) for fast re-ranking
 
 ## Project Structure
 
@@ -134,7 +135,7 @@ The project uses a queue-based architecture with multiple stages:
    - Upserts candidate record in D1 (using URL hash as ID)
    - Inserts extracted events into D1 with proper relationships
    - Generates embeddings using Workers AI (@cf/baai/bge-base-en-v1.5, 768 dimensions)
-   - Stores embeddings in Vectorize for semantic search with metadata (role, org, acad_year, url)
+   - Stores embeddings in **both** Vectorize (for semantic search) and D1 `event_vectors` table (for fast re-ranking)
 3. **D1 Database** - Stores normalized career path data
 4. **R2 Storage** - Stores raw page contents for processing
 5. **Cloudflare Queue** - Decouples ingestion from processing for scalability
@@ -158,16 +159,21 @@ curl -X POST http://localhost:8787/ingest/start \
 # Check Vectorize index stats
 npx wrangler vectorize info career-events
 
-# Query the D1 database to see stored events
+# Query the D1 database to see stored data
 npm run sql -- "SELECT COUNT(*) FROM events" -- --local
 npm run sql -- "SELECT COUNT(*) FROM candidates" -- --local
+npm run sql -- "SELECT COUNT(*) FROM event_vectors" -- --local
+
+# Inspect a sample event vector
+npm run sql -- "SELECT id, candidate_id, ord, LENGTH(vec) as vec_bytes FROM event_vectors LIMIT 3" -- --local
 ```
 
 The logs should show:
 - URLs being saved to R2
 - Events being extracted and stored in D1
 - Embeddings being generated (768 dimensions)
-- Vectors being upserted to Vectorize
+- Vectors being stored in both Vectorize and D1 `event_vectors` table
+- Example log: `Vector stored in Vectorize + D1: {candidateId}:{ord}`
 
 ## Deployment
 
