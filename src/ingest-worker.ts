@@ -1,6 +1,6 @@
 import type { Env } from './types';
 import { exaContents } from './lib/exa';
-import { extractEvents } from './lib/extract';
+import { extractLLM } from './lib/extract';
 import { upsertCandidate, insertEvents, upsertEventVector } from './lib/store';
 import { embedEvent, upsertEmbedding } from './lib/embed';
 
@@ -24,11 +24,12 @@ export default {
         await env.BLOB.put(key, JSON.stringify(page));
         console.log('Saved raw:', key);
 
-        // Extract events from the page
+        // Extract events from the page using LLM (with fallback to heuristic)
         const candidateId = await hashUrl(url);
         await upsertCandidate(env, candidateId, url, {});
 
-        const events = extractEvents(page);
+        const text = (page as any)?.results?.[0]?.text || '';
+        const events = await extractLLM(env, text);
         await insertEvents(env, candidateId, events);
         console.log(`Stored ${events.length} events for ${url}`);
 

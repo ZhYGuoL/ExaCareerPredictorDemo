@@ -190,6 +190,50 @@ All cache misses log detailed metrics in JSON format for analysis:
 
 Use `wrangler tail` to stream logs during development.
 
+## LLM-Based Event Extraction
+
+The system uses **Workers AI** (Llama 3.1 8B Instruct) for intelligent event extraction from unstructured text with automatic fallback to heuristic extraction.
+
+### How It Works
+
+**LLM Extraction** (`extractLLM`):
+1. Sends page text to Workers AI with structured JSON prompt
+2. Requests specific schema: `{events: [{role, org, start_iso, end_iso, acad_year, ord}]}`
+3. Retries up to 2 times if JSON parsing fails
+4. Falls back to heuristic keyword extraction if LLM fails
+
+**Heuristic Fallback** (`extractEvents`):
+- Searches for keywords: "intern", "research", "offer"
+- Extracts matching lines as events
+- Always available as a safety net
+
+### Extraction Quality
+
+The LLM extractor provides:
+- **Better accuracy**: Understands context and relationships
+- **Structured data**: Extracts company names, roles, dates, and academic years
+- **Resilience**: Automatic fallback ensures data is never lost
+- **Cost-effective**: Only runs on ingestion (cached afterward)
+
+Example extracted event:
+```json
+{
+  "role": "Software Engineering Intern",
+  "org": "Google",
+  "start_iso": "2024-06",
+  "end_iso": "2024-08",
+  "acad_year": "junior",
+  "ord": 0
+}
+```
+
+### Monitoring
+
+Watch for these log messages:
+- `[LLM Extract] Found N events (attempt 1)` - Successful extraction
+- `[LLM Extract] Attempt N failed: ...` - Retry in progress  
+- `[LLM Extract] Falling back to heuristic extraction` - Using fallback
+
 ## Scripts
 
 - `npm run dev` - Start local development server
@@ -222,9 +266,10 @@ src/
 ├── types.d.ts        # TypeScript type definitions for bindings
 └── lib/
     ├── exa.ts        # Exa API client wrapper
-    ├── extract.ts    # Event extraction from raw text
+    ├── extract.ts    # LLM-based + heuristic event extraction
     ├── store.ts      # D1 database operations (upsert/insert)
-    └── embed.ts      # Workers AI embedding generation + Vectorize storage
+    ├── embed.ts      # Workers AI embedding generation + Vectorize storage
+    └── companyGraph.ts # Company similarity graph for ranking
 migrations/
 └── 0001_init.sql     # Initial database schema
 ```
@@ -237,7 +282,10 @@ The project uses a queue-based architecture with multiple stages:
 2. **Queue Consumer** (`src/ingest-worker.ts`) - Processes URLs from the queue:
    - Fetches page contents via Exa API
    - Stores raw JSON in R2 (using SHA-1 hash of URL as key)
-   - Extracts career events using keyword matching (stub implementation)
+   - **Extracts career events using LLM** (Workers AI Llama 3.1 8B Instruct):
+     - Structured JSON extraction with retry logic (up to 2 attempts)
+     - Falls back to heuristic keyword matching if LLM fails
+     - Extracts: role, organization, dates (ISO-8601), academic year, sequence order
    - Upserts candidate record in D1 (using URL hash as ID)
    - Inserts extracted events into D1 with proper relationships
    - Generates embeddings using Workers AI (@cf/baai/bge-base-en-v1.5, 768 dimensions)
@@ -246,7 +294,7 @@ The project uses a queue-based architecture with multiple stages:
 4. **R2 Storage** - Stores raw page contents for processing
 5. **Cloudflare Queue** - Decouples ingestion from processing for scalability
 6. **Vectorize** - Vector database for semantic similarity search across career events
-7. **Workers AI** - Generates text embeddings for semantic understanding
+7. **Workers AI** - Generates text embeddings for semantic understanding and LLM-based event extraction
 8. **Durable Object (ReRanker)** - Stateful re-ranking service using Soft-DTW algorithm for sequence similarity
    - Loads candidate event sequences from D1 `event_vectors` table
    - Embeds user's career events on-the-fly using Workers AI
