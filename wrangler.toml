@@ -50,13 +50,13 @@ max_batch_timeout = 30
 binding = "BLOB"
 bucket_name = "raw-artifacts"
 
-# [[durable_objects.bindings]]
-# name = "RERANKER"
-# class_name = "ReRanker"
+[[durable_objects.bindings]]
+name = "RERANKER"
+class_name = "ReRanker"
 
-# [[migrations]]
-# tag = "v1"
-# new_classes = ["ReRanker"]
+[[migrations]]
+tag = "v1"
+new_classes = ["ReRanker"]
 
 [ai]
 binding = "AI"

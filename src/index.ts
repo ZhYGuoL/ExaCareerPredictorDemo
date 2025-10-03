@@ -105,6 +105,20 @@ export default {
       }
     }
     
+    // POST /rerank
+    if (req.method === "POST" && url.pathname === "/rerank") {
+      try {
+        const id = env.RERANKER.idFromName("default");
+        const stub = env.RERANKER.get(id);
+        return await stub.fetch(req);
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+    
     return new Response("Not found", { status: 404 });
   },
 
@@ -113,4 +127,7 @@ export default {
     return ingestWorker.queue(batch, env);
   },
 };
+
+// Export Durable Object
+export { ReRanker } from "./reranker";
 
