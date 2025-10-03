@@ -174,9 +174,17 @@ The project uses a queue-based architecture with multiple stages:
    - Loads candidate event sequences from D1 `event_vectors` table
    - Embeds user's career events on-the-fly using Workers AI
    - Computes Soft-DTW distance between sequences (considers order and timing)
+   - **Blended Scoring:** Combines Soft-DTW with company similarity
+     - **70% Soft-DTW:** Sequence similarity based on career trajectory
+     - **30% Company Proximity:** Goal-based company similarity scoring
+       - Exact match (e.g., Google → Google): 1.0
+       - Close neighbor (e.g., Google → YouTube): 0.8
+       - Cross-FAANG (e.g., Google → Meta): 0.65
+       - Other companies: 0.3 (baseline)
+     - Company graph includes: Google/YouTube/DeepMind, Meta/Instagram/WhatsApp, Microsoft/LinkedIn/GitHub, Amazon/AWS
    - Returns similarity scores in (0,1] range (higher = better match)
    - **Caching:** In-memory cache with TTL (10 min) and LRU eviction (200 entry cap)
-     - Cache key: SHA-1 hash of `{userEvents, candidateIds, gamma}`
+     - Cache key: SHA-1 hash of `{userEvents, candidateIds, gamma, goal}`
      - Repeated requests with identical inputs return cached results instantly
      - Response includes `cached: boolean` field for debugging
 

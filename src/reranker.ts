@@ -1,5 +1,6 @@
 import type { Env } from "./types";
 import { embedEvent } from "./lib/embed";
+import { goalProximity } from "./lib/companyGraph";
 
 // Cache helper: SHA-1 hash of object for cache key
 async function sha1(obj: any): Promise<string> {
@@ -64,6 +65,13 @@ async function loadSeq(env: Env, candidateId: string): Promise<number[][]> {
   return seq;
 }
 
+async function loadCandidateOrgs(env: Env, candidateId: string): Promise<string[]> {
+  const rs = await env.DB.prepare(
+    "SELECT org FROM events WHERE candidate_id = ?1 ORDER BY ord ASC"
+  ).bind(candidateId).all();
+  return (rs.results || []).map((r: any) => r.org).filter(Boolean);
+}
+
 export class ReRanker {
   private cache = new Map<string, CacheEntry>(); // key -> { value, ts }
   private TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -103,14 +111,15 @@ export class ReRanker {
   }
 
   async fetch(req: Request): Promise<Response> {
-    const { userEvents, candidateIds, gamma = 0.1 } = await req.json() as {
+    const { userEvents, candidateIds, gamma = 0.1, goal } = await req.json() as {
       userEvents: Array<{ role?: string; org?: string; acad_year?: string }>;
       candidateIds: string[];
       gamma?: number;
+      goal?: { target_company?: string; target_year?: string };
     };
 
-    // Check cache
-    const cacheKey = await sha1({ userEvents, candidateIds, gamma });
+    // Check cache (include goal in cache key)
+    const cacheKey = await sha1({ userEvents, candidateIds, gamma, goal });
     const cached = this.cache.get(cacheKey);
     if (cached && (Date.now() - cached.ts) <= this.TTL_MS) {
       this.touch(cacheKey);
@@ -129,16 +138,29 @@ export class ReRanker {
       X.push(await embedEvent(this.env, text));
     }
 
-    // 2) Load candidate sequences from D1 and compute scores
+    // 2) Load candidate sequences and compute blended scores
+    const targetCompany = goal?.target_company || "google";
     const scores: { id: string; score: number }[] = [];
+    
     for (const cid of candidateIds) {
       const Y = await loadSeq(this.env, cid);
       if (X.length === 0 || Y.length === 0) {
         scores.push({ id: cid, score: 0 });
         continue;
       }
+      
+      // Soft-DTW similarity
       const dist = softDTWFromCosine(X, Y, gamma);
-      scores.push({ id: cid, score: toSimilarity(dist) });
+      const softSim = toSimilarity(dist);
+      
+      // Goal proximity based on candidate's organizations
+      const orgs = await loadCandidateOrgs(this.env, cid);
+      const prox = goalProximity(orgs, targetCompany);
+      
+      // Blended score: 70% Soft-DTW, 30% company proximity
+      const blended = 0.7 * softSim + 0.3 * prox;
+      
+      scores.push({ id: cid, score: blended });
     }
 
     // 3) Sort by score descending

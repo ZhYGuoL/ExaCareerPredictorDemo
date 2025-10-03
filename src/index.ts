@@ -169,7 +169,7 @@ export default {
         const rerankRes = await stub.fetch("http://do/rerank", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ userEvents, candidateIds, gamma })
+          body: JSON.stringify({ userEvents, candidateIds, gamma, goal })
         }).then(r => r.json()) as { results: Array<{ id: string; score: number }>; cached?: boolean };
 
         const sorted = rerankRes.results.slice(0, topN);
