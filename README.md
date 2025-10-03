@@ -46,6 +46,7 @@ The server will start on `http://localhost:8787`
 
 ### Available Endpoints
 
+- `GET /` - **Web UI** - Interactive career path matcher interface
 - `GET /health` - Health check endpoint
 - `GET /metrics` - **Observability metrics** (totalRequests, cacheHits, reranks, errors)
 - `POST /ingest/start` - Start career path ingestion (generates queries, searches Exa, enqueues URLs)
@@ -54,7 +55,24 @@ The server will start on `http://localhost:8787`
 - `GET /debug/exa?q=<query>` - Test Exa API integration
 - `GET /debug/r2?key=<path>` - Retrieve stored R2 object for debugging
 
-### Example Usage
+### Web UI
+
+Open `http://localhost:8787/` in your browser for an interactive interface:
+
+1. **Fill in your profile**: School, major, graduation year
+2. **Set your goal**: Target company and target year (freshman/sophomore/junior/senior)
+3. **Add your events**: Paste JSON array of your career timeline events:
+   ```json
+   [
+     {"role":"Research Assistant","org":"Stanford AI Lab","acad_year":"freshman"},
+     {"role":"Software Engineer Intern","org":"Google","acad_year":"sophomore"}
+   ]
+   ```
+4. **Click Search**: Results appear in a table with candidate IDs, scores, and URLs
+
+The UI calls `/rank/final` behind the scenes and displays the top matching career paths.
+
+### Example Usage (API)
 
 ```bash
 # Health check

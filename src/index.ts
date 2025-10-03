@@ -3,9 +3,99 @@ import { exaSearch } from './lib/exa';
 import { embedEvent } from './lib/embed';
 import ingestWorker from './ingest-worker';
 
+function ui(): Response {
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Career Path Matcher</title>
+  <style>
+    body{font-family: system-ui, sans-serif; margin: 24px; max-width: 900px}
+    input, textarea, select, button{width:100%; padding:8px; margin:6px 0}
+    table{width:100%; border-collapse: collapse; margin-top: 16px}
+    th, td{border:1px solid #ddd; padding:8px}
+    th{text-align:left; background:#f7f7f7}
+    .row{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+    .muted{color:#666; font-size:12px}
+  </style>
+</head>
+<body>
+  <h1>Career Path Matcher</h1>
+  <div class="row">
+    <div><label>School <input id="school" placeholder="MIT"></label></div>
+    <div><label>Major <input id="major" placeholder="CS"></label></div>
+  </div>
+  <div class="row">
+    <div><label>Grad Year <input id="grad" type="number" placeholder="2026"></label></div>
+    <div><label>Target Company <input id="company" placeholder="Google"></label></div>
+  </div>
+  <div class="row">
+    <div>
+      <label>Target Year
+        <select id="tyear">
+          <option>freshman</option><option>sophomore</option>
+          <option selected>junior</option><option>senior</option>
+        </select>
+      </label>
+    </div>
+    <div class="muted">Enter a few user events below (JSON). Example:<br/>
+      <code>[{"role":"Research Assistant","org":"ML Lab","acad_year":"freshman"},{"role":"Backend Intern","org":"Startup X","acad_year":"sophomore"}]</code>
+    </div>
+  </div>
+  <label>User Events (JSON)</label>
+  <textarea id="events" rows="6" placeholder='[{"role":"Software Engineer Intern","org":"Google","acad_year":"sophomore"}]'></textarea>
+  <button id="go">Search</button>
+  <div id="out"></div>
+  <script>
+  async function go(){
+    const profile = { school: school.value, major: major.value, grad_year: Number(grad.value||0) };
+    const goal = { target_company: company.value, target_year: tyear.value };
+    let userEvents = [];
+    try { userEvents = JSON.parse(events.value || "[]"); } catch(e){ alert("Invalid JSON for events"); return; }
+    out.innerHTML = '<p>Loading...</p>';
+    try {
+      const res = await fetch('/rank/final', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ profile, goal, userEvents, topK: 50, topN: 10, gamma: 0.1 })
+      });
+      const data = await res.json();
+      if (data.error) {
+        out.innerHTML = '<p style="color:red">Error: ' + data.error + '</p>';
+        return;
+      }
+      const rows = (data.results||[]).map(r=>\`
+        <tr>
+          <td>\${r.candidate_id}</td>
+          <td>\${(r.score||0).toFixed(4)}</td>
+          <td>\${r.url ? '<a href="'+r.url+'" target="_blank">open</a>' : ''}</td>
+        </tr>\`).join('');
+      if (rows) {
+        out.innerHTML = '<table><thead><tr><th>Candidate ID</th><th>Score</th><th>URL</th></tr></thead><tbody>'+rows+'</tbody></table>';
+      } else {
+        out.innerHTML = '<p>No results found. Try different criteria or ingest more data first.</p>';
+      }
+    } catch (err) {
+      out.innerHTML = '<p style="color:red">Error: ' + err.message + '</p>';
+    }
+  }
+  document.getElementById('go').addEventListener('click', go);
+  </script>
+</body>
+</html>`;
+  return new Response(html, {
+    headers: { 'content-type': 'text/html; charset=utf-8' },
+  });
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
+
+    // GET / - UI
+    if (req.method === 'GET' && url.pathname === '/') {
+      return ui();
+    }
 
     // GET /health
     if (req.method === 'GET' && url.pathname === '/health') {
