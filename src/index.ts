@@ -170,7 +170,7 @@ export default {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ userEvents, candidateIds, gamma })
-        }).then(r => r.json()) as { results: Array<{ id: string; score: number }> };
+        }).then(r => r.json()) as { results: Array<{ id: string; score: number }>; cached?: boolean };
 
         const sorted = rerankRes.results.slice(0, topN);
 
@@ -187,7 +187,10 @@ export default {
           });
         }
 
-        return new Response(JSON.stringify({ results: out }), {
+        return new Response(JSON.stringify({ 
+          results: out, 
+          cached: rerankRes.cached || false 
+        }), {
           headers: { "content-type": "application/json" },
         });
       } catch (err) {

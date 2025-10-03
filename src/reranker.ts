@@ -1,6 +1,15 @@
 import type { Env } from "./types";
 import { embedEvent } from "./lib/embed";
 
+// Cache helper: SHA-1 hash of object for cache key
+async function sha1(obj: any): Promise<string> {
+  const s = JSON.stringify(obj);
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+type CacheEntry = { value: any; ts: number };
+
 function cosineSim(a: number[], b: number[]): number {
   let dot = 0, na = 0, nb = 0;
   for (let i=0; i<a.length; i++) {
@@ -56,7 +65,42 @@ async function loadSeq(env: Env, candidateId: string): Promise<number[][]> {
 }
 
 export class ReRanker {
+  private cache = new Map<string, CacheEntry>(); // key -> { value, ts }
+  private TTL_MS = 10 * 60 * 1000; // 10 minutes
+  private MAX_SIZE = 200;
+  
   constructor(private state: DurableObjectState, private env: Env) {}
+
+  // LRU touch: move key to end of map
+  private touch(key: string) {
+    const v = this.cache.get(key);
+    if (!v) return;
+    this.cache.delete(key);
+    this.cache.set(key, v);
+  }
+
+  // Set cache with eviction
+  private setCache(key: string, value: any) {
+    // Evict expired entries
+    const now = Date.now();
+    for (const [k, entry] of this.cache) {
+      if (now - entry.ts > this.TTL_MS) {
+        this.cache.delete(k);
+      }
+    }
+    
+    // LRU size cap: evict oldest entries
+    while (this.cache.size >= this.MAX_SIZE) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey) {
+        this.cache.delete(oldestKey);
+      } else {
+        break;
+      }
+    }
+    
+    this.cache.set(key, { value, ts: now });
+  }
 
   async fetch(req: Request): Promise<Response> {
     const { userEvents, candidateIds, gamma = 0.1 } = await req.json() as {
@@ -64,6 +108,19 @@ export class ReRanker {
       candidateIds: string[];
       gamma?: number;
     };
+
+    // Check cache
+    const cacheKey = await sha1({ userEvents, candidateIds, gamma });
+    const cached = this.cache.get(cacheKey);
+    if (cached && (Date.now() - cached.ts) <= this.TTL_MS) {
+      this.touch(cacheKey);
+      console.log(`Cache HIT for key ${cacheKey.substring(0, 8)}...`);
+      return new Response(JSON.stringify({ results: cached.value, cached: true }), {
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    console.log(`Cache MISS for key ${cacheKey.substring(0, 8)}...`);
 
     // 1) Embed user events
     const X: number[][] = [];
@@ -87,7 +144,11 @@ export class ReRanker {
     // 3) Sort by score descending
     scores.sort((a, b) => b.score - a.score);
     
-    return new Response(JSON.stringify({ results: scores }), {
+    // Cache the results
+    this.setCache(cacheKey, scores);
+    console.log(`Cached ${scores.length} results (cache size: ${this.cache.size}/${this.MAX_SIZE})`);
+    
+    return new Response(JSON.stringify({ results: scores, cached: false }), {
       headers: { "content-type": "application/json" }
     });
   }

@@ -175,6 +175,10 @@ The project uses a queue-based architecture with multiple stages:
    - Embeds user's career events on-the-fly using Workers AI
    - Computes Soft-DTW distance between sequences (considers order and timing)
    - Returns similarity scores in (0,1] range (higher = better match)
+   - **Caching:** In-memory cache with TTL (10 min) and LRU eviction (200 entry cap)
+     - Cache key: SHA-1 hash of `{userEvents, candidateIds, gamma}`
+     - Repeated requests with identical inputs return cached results instantly
+     - Response includes `cached: boolean` field for debugging
 
 ### Verifying the Pipeline
 
