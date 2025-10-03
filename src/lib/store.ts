@@ -20,3 +20,12 @@ export async function insertEvents(env: Env, candidateId: string, events: Event[
   }
 }
 
+export async function upsertEventVector(env: Env, id: string, candidateId: string, ord: number, vec: number[]) {
+  // Store as binary blob
+  const buf = new Float32Array(vec).buffer;
+  await env.DB
+    .prepare("INSERT OR REPLACE INTO event_vectors (id, candidate_id, ord, vec) VALUES (?1, ?2, ?3, ?4)")
+    .bind(id, candidateId, ord, new Uint8Array(buf))
+    .run();
+}
+

@@ -1,7 +1,7 @@
 import type { Env } from "./types";
 import { exaContents } from "./lib/exa";
 import { extractEvents } from "./lib/extract";
-import { upsertCandidate, insertEvents } from "./lib/store";
+import { upsertCandidate, insertEvents, upsertEventVector } from "./lib/store";
 import { embedEvent, upsertEmbedding } from "./lib/embed";
 
 async function hashUrl(url: string): Promise<string> {
@@ -29,7 +29,7 @@ export default {
         
         // Generate embeddings for events
         for (const e of events) {
-          const text = `${e.role} ${e.org}`.trim();
+          const text = `${e.acad_year} | ${e.role} | ${e.org}`.trim();
           if (text.length > 0) {
             try {
               const eid = `${candidateId}:${e.ord}`;
@@ -38,12 +38,17 @@ export default {
               
               // Store embedding in Vectorize
               await upsertEmbedding(env, eid, embedding, {
+                candidate_id: candidateId,
+                ord: e.ord,
                 role: e.role,
                 org: e.org,
                 acad_year: e.acad_year,
                 url: url
               });
-              console.log(`Vector upserted for event ${eid}`);
+              
+              // Store embedding in D1
+              await upsertEventVector(env, eid, candidateId, e.ord, embedding);
+              console.log(`Vector stored in Vectorize + D1: ${eid}`);
             } catch (embErr) {
               console.error("Error generating embedding:", embErr);
             }
