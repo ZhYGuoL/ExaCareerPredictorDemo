@@ -139,10 +139,10 @@ Requests return detailed timing breakdowns:
   "reqId": "920f3cbf",
   "cached": false,
   "timings": {
-    "embedMs": 910,    // Time to embed user events
-    "loadMs": 17,      // Time to load candidate sequences from D1
-    "dtwMs": 0,        // Time to sort results
-    "totalMs": 932     // Total request time
+    "embedMs": 910, // Time to embed user events
+    "loadMs": 17, // Time to load candidate sequences from D1
+    "dtwMs": 0, // Time to sort results
+    "totalMs": 932 // Total request time
   }
 }
 ```
@@ -159,14 +159,15 @@ curl http://localhost:8787/metrics
 
 ```json
 {
-  "totalRequests": 15,  // Total requests processed
-  "cacheHits": 8,       // Requests served from cache
-  "reranks": 7,         // Cache misses requiring computation
-  "errors": 0           // Failed requests
+  "totalRequests": 15, // Total requests processed
+  "cacheHits": 8, // Requests served from cache
+  "reranks": 7, // Cache misses requiring computation
+  "errors": 0 // Failed requests
 }
 ```
 
 **Key Metrics:**
+
 - **Cache Hit Rate:** `cacheHits / totalRequests` (higher is better)
 - **Error Rate:** `errors / totalRequests` (lower is better)
 - **Rerank Count:** Number of expensive Soft-DTW computations
@@ -194,6 +195,9 @@ Use `wrangler tail` to stream logs during development.
 - `npm run dev` - Start local development server
 - `npm run deploy` - Deploy to Cloudflare Workers
 - `npm run typecheck` - Run TypeScript type checking
+- `npm run lint` - Run ESLint to check code quality
+- `npm run format` - Format code with Prettier
+- `npm run check` - Run type checking and linting (CI equivalent)
 - `npm run migrate` - Apply D1 database migrations (local)
 - `npm run sql -- "SQL_QUERY" -- --local` - Execute SQL queries on local database
 
@@ -287,6 +291,7 @@ npm run sql -- "SELECT id, candidate_id, ord, LENGTH(vec) as vec_bytes FROM even
 ```
 
 The logs should show:
+
 - URLs being saved to R2
 - Events being extracted and stored in D1
 - Embeddings being generated (768 dimensions)
@@ -298,21 +303,23 @@ The logs should show:
 For production deployment:
 
 1. **Create Cloudflare Resources:**
+
    ```bash
    # Create Vectorize index
    npx wrangler vectorize create career-events --dimensions=768 --metric=cosine
-   
+
    # Create D1 database
    npx wrangler d1 create app
-   
+
    # Create R2 bucket
    npx wrangler r2 bucket create raw-artifacts
-   
+
    # Create Queue
    npx wrangler queues create ingest
    ```
 
 2. **Set Production Secrets:**
+
    ```bash
    wrangler secret put EXA_KEY
    ```
@@ -320,6 +327,7 @@ For production deployment:
 3. **Update `wrangler.toml`** with actual resource IDs from step 1
 
 4. **Run Database Migrations:**
+
    ```bash
    npx wrangler d1 migrations apply app
    ```
@@ -329,3 +337,62 @@ For production deployment:
    npm run deploy
    ```
 
+## Code Quality & CI/CD
+
+### Code Quality Tools
+
+The project uses industry-standard code quality tools:
+
+**ESLint** - Static code analysis to catch errors and enforce coding standards:
+
+```bash
+npm run lint
+```
+
+**Prettier** - Automatic code formatting for consistent style:
+
+```bash
+npm run format
+```
+
+**TypeScript** - Type checking for type safety:
+
+```bash
+npm run typecheck
+```
+
+### Configuration
+
+- **`.prettierrc`** - Prettier configuration (single quotes, semicolons, trailing commas)
+- **`eslint.config.mjs`** - ESLint 9 flat config with TypeScript support
+- **`tsconfig.json`** - TypeScript compiler options for Cloudflare Workers
+
+### Running All Checks
+
+Before committing, run the full check suite:
+
+```bash
+npm run check
+```
+
+This runs both type checking and linting, matching what CI will run.
+
+### Continuous Integration
+
+GitHub Actions automatically runs on every push and pull request:
+
+**Workflow:** `.github/workflows/ci.yml`
+
+**Checks:**
+
+1. **Type Checking** - Ensures TypeScript types are correct
+2. **Linting** - Verifies code quality standards
+3. **Dry Run Deploy** - Validates Wrangler configuration
+
+View CI status in the "Actions" tab on GitHub.
+
+**Best Practices:**
+
+- Run `npm run format` before committing to auto-fix formatting
+- Run `npm run check` locally before pushing to catch issues early
+- All CI checks must pass before merging PRs

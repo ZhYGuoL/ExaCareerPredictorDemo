@@ -1,12 +1,17 @@
-import type { Env } from "./types";
-import { exaContents } from "./lib/exa";
-import { extractEvents } from "./lib/extract";
-import { upsertCandidate, insertEvents, upsertEventVector } from "./lib/store";
-import { embedEvent, upsertEmbedding } from "./lib/embed";
+import type { Env } from './types';
+import { exaContents } from './lib/exa';
+import { extractEvents } from './lib/extract';
+import { upsertCandidate, insertEvents, upsertEventVector } from './lib/store';
+import { embedEvent, upsertEmbedding } from './lib/embed';
 
 async function hashUrl(url: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(url));
-  return Array.from(new Uint8Array(buf)).map(x => x.toString(16).padStart(2, "0")).join("");
+  const buf = await crypto.subtle.digest(
+    'SHA-1',
+    new TextEncoder().encode(url),
+  );
+  return Array.from(new Uint8Array(buf))
+    .map((x) => x.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 export default {
@@ -17,16 +22,16 @@ export default {
         const page = await exaContents(env, [url]);
         const key = `raw/${await hashUrl(url)}.json`;
         await env.BLOB.put(key, JSON.stringify(page));
-        console.log("Saved raw:", key);
-        
+        console.log('Saved raw:', key);
+
         // Extract events from the page
         const candidateId = await hashUrl(url);
         await upsertCandidate(env, candidateId, url, {});
-        
+
         const events = extractEvents(page);
         await insertEvents(env, candidateId, events);
         console.log(`Stored ${events.length} events for ${url}`);
-        
+
         // Generate embeddings for events
         for (const e of events) {
           const text = `${e.acad_year} | ${e.role} | ${e.org}`.trim();
@@ -35,7 +40,7 @@ export default {
               const eid = `${candidateId}:${e.ord}`;
               const embedding = await embedEvent(env, text);
               console.log(`Embedding length: ${embedding.length}`);
-              
+
               // Store embedding in Vectorize
               await upsertEmbedding(env, eid, embedding, {
                 candidate_id: candidateId,
@@ -43,24 +48,23 @@ export default {
                 role: e.role,
                 org: e.org,
                 acad_year: e.acad_year,
-                url: url
+                url: url,
               });
-              
+
               // Store embedding in D1
               await upsertEventVector(env, eid, candidateId, e.ord, embedding);
               console.log(`Vector stored in Vectorize + D1: ${eid}`);
             } catch (embErr) {
-              console.error("Error generating embedding:", embErr);
+              console.error('Error generating embedding:', embErr);
             }
           }
         }
-        
+
         msg.ack();
       } catch (err) {
-        console.error("Error processing URL:", url, err);
+        console.error('Error processing URL:', url, err);
         msg.retry();
       }
     }
   },
 };
-

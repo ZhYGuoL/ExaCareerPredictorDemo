@@ -8,19 +8,23 @@ export interface Event {
 }
 
 export function extractEvents(page: any): Event[] {
-  const text = page?.results?.[0]?.text || "";
+  const text = page?.results?.[0]?.text || '';
   const lines = text.split(/\n+/);
   const events: Event[] = [];
   let ord = 0;
   for (const line of lines) {
     const lower = line.toLowerCase();
-    if (lower.includes("intern") || lower.includes("research") || lower.includes("offer")) {
+    if (
+      lower.includes('intern') ||
+      lower.includes('research') ||
+      lower.includes('offer')
+    ) {
       events.push({
         role: line.trim(),
-        org: "unknown",
+        org: 'unknown',
         start_iso: null,
         end_iso: null,
-        acad_year: "unknown",
+        acad_year: 'unknown',
         ord: ord++,
       });
     }
@@ -28,8 +32,7 @@ export function extractEvents(page: any): Event[] {
   return events;
 }
 
-export function inferAcademicYear(date: string, gradYear: number): string {
+export function inferAcademicYear(_date: string, _gradYear: number): string {
   // stub: real logic later
-  return "unknown";
+  return 'unknown';
 }
-
