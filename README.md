@@ -120,18 +120,74 @@ The project uses a queue-based architecture with multiple stages:
    - Extracts career events using keyword matching (stub implementation)
    - Upserts candidate record in D1 (using URL hash as ID)
    - Inserts extracted events into D1 with proper relationships
-   - Generates embeddings using Workers AI (@cf/baai/bge-base-en-v1.5)
-   - [TODO] Store embeddings in Vectorize for semantic search
+   - Generates embeddings using Workers AI (@cf/baai/bge-base-en-v1.5, 768 dimensions)
+   - Stores embeddings in Vectorize for semantic search with metadata (role, org, acad_year, url)
 3. **D1 Database** - Stores normalized career path data
 4. **R2 Storage** - Stores raw page contents for processing
 5. **Cloudflare Queue** - Decouples ingestion from processing for scalability
+6. **Vectorize** - Vector database for semantic similarity search across career events
+7. **Workers AI** - Generates text embeddings for semantic understanding
+
+### Verifying the Pipeline
+
+To verify the complete pipeline is working:
+
+```bash
+# Start dev server with Vectorize production binding
+npx wrangler dev --experimental-vectorize-bind-to-prod
+
+# Trigger an ingestion (in another terminal)
+curl -X POST http://localhost:8787/ingest/start \
+  -H "content-type: application/json" \
+  -d '{"profile":{"school":"MIT","major":"CS"},"goal":{"target_company":"Apple","target_year":"sophomore"}}'
+
+# Check Vectorize index stats
+npx wrangler vectorize info career-events
+
+# Query the D1 database to see stored events
+npm run sql -- "SELECT COUNT(*) FROM events" -- --local
+npm run sql -- "SELECT COUNT(*) FROM candidates" -- --local
+```
+
+The logs should show:
+- URLs being saved to R2
+- Events being extracted and stored in D1
+- Embeddings being generated (768 dimensions)
+- Vectors being upserted to Vectorize
 
 ## Deployment
 
 For production deployment:
 
-1. Set up Cloudflare resources (D1, Vectorize, R2, etc.)
-2. Set production secrets: `wrangler secret put EXA_KEY`
-3. Update `wrangler.toml` with actual resource IDs
-4. Deploy: `npm run deploy`
+1. **Create Cloudflare Resources:**
+   ```bash
+   # Create Vectorize index
+   npx wrangler vectorize create career-events --dimensions=768 --metric=cosine
+   
+   # Create D1 database
+   npx wrangler d1 create app
+   
+   # Create R2 bucket
+   npx wrangler r2 bucket create raw-artifacts
+   
+   # Create Queue
+   npx wrangler queues create ingest
+   ```
+
+2. **Set Production Secrets:**
+   ```bash
+   wrangler secret put EXA_KEY
+   ```
+
+3. **Update `wrangler.toml`** with actual resource IDs from step 1
+
+4. **Run Database Migrations:**
+   ```bash
+   npx wrangler d1 migrations apply app
+   ```
+
+5. **Deploy:**
+   ```bash
+   npm run deploy
+   ```
 
