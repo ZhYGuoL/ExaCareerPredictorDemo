@@ -47,6 +47,7 @@ The server will start on `http://localhost:8787`
 ### Available Endpoints
 
 - `GET /health` - Health check endpoint
+- `GET /metrics` - **Observability metrics** (totalRequests, cacheHits, reranks, errors)
 - `POST /ingest/start` - Start career path ingestion (generates queries, searches Exa, enqueues URLs)
 - `POST /rank/final` - **End-to-end ranking pipeline** (Vectorize shortlist → Soft-DTW re-rank → top-N results)
 - `POST /rerank` - Re-rank candidate sequences using Soft-DTW (Durable Object)
@@ -115,6 +116,78 @@ curl -X POST http://localhost:8787/rank/final \
     "gamma": 0.1
   }'
 ```
+
+## Observability
+
+The system includes comprehensive observability features for monitoring and debugging:
+
+### Request Tracking
+
+Every request to the ReRanker Durable Object is assigned a unique **request ID** (8-character hex) for tracing:
+
+```bash
+curl -X POST http://localhost:8787/rerank ... | jq .reqId
+# Output: "8a2fb8fb"
+```
+
+### Timing Metrics
+
+Requests return detailed timing breakdowns:
+
+```json
+{
+  "reqId": "920f3cbf",
+  "cached": false,
+  "timings": {
+    "embedMs": 910,    // Time to embed user events
+    "loadMs": 17,      // Time to load candidate sequences from D1
+    "dtwMs": 0,        // Time to sort results
+    "totalMs": 932     // Total request time
+  }
+}
+```
+
+Cache hits show minimal `totalMs` since no computation is needed.
+
+### Performance Counters
+
+The `/metrics` endpoint exposes real-time counters from the ReRanker Durable Object:
+
+```bash
+curl http://localhost:8787/metrics
+```
+
+```json
+{
+  "totalRequests": 15,  // Total requests processed
+  "cacheHits": 8,       // Requests served from cache
+  "reranks": 7,         // Cache misses requiring computation
+  "errors": 0           // Failed requests
+}
+```
+
+**Key Metrics:**
+- **Cache Hit Rate:** `cacheHits / totalRequests` (higher is better)
+- **Error Rate:** `errors / totalRequests` (lower is better)
+- **Rerank Count:** Number of expensive Soft-DTW computations
+
+### Structured Logging
+
+All cache misses log detailed metrics in JSON format for analysis:
+
+```json
+{
+  "reqId": "920f3cbf",
+  "embedMs": 910,
+  "loadMs": 17,
+  "dtwMs": 0,
+  "totalMs": 932,
+  "candidateCount": 2,
+  "cacheSize": 1
+}
+```
+
+Use `wrangler tail` to stream logs during development.
 
 ## Scripts
 

@@ -13,6 +13,23 @@ export default {
         headers: { "content-type": "application/json" },
       });
     }
+
+    // GET /metrics - Proxy to ReRanker DO metrics
+    if (req.method === "GET" && url.pathname === "/metrics") {
+      try {
+        const id = env.RERANKER.idFromName("global-reranker");
+        const stub = env.RERANKER.get(id);
+        const res = await stub.fetch("http://do/metrics");
+        return new Response(await res.text(), {
+          headers: { "content-type": "application/json" }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
     
     // POST /ingest/start
     if (req.method === "POST" && url.pathname === "/ingest/start") {
@@ -109,7 +126,7 @@ export default {
     // POST /rerank
     if (req.method === "POST" && url.pathname === "/rerank") {
       try {
-        const id = env.RERANKER.idFromName("default");
+        const id = env.RERANKER.idFromName("global-reranker");
         const stub = env.RERANKER.get(id);
         return await stub.fetch(req);
       } catch (err) {
