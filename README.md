@@ -75,14 +75,28 @@ curl -X POST http://localhost:8787/ingest/start \
 # Test Exa search directly
 curl "http://localhost:8787/debug/exa?q=internship"
 
-# Re-rank candidates using Soft-DTW
+# Re-rank candidates using Soft-DTW (loads vectors from D1)
 curl -X POST http://localhost:8787/rerank \
   -H "content-type: application/json" \
   -d '{
-    "query": ["intern at google", "software engineer"],
-    "candidates": [
-      {"id": "c1", "events": ["intern", "engineer", "research"]},
-      {"id": "c2", "events": ["designer", "product", "manager"]}
+    "userEvents": [
+      {"role": "Software Engineering Intern", "org": "Google", "acad_year": "junior"}
+    ],
+    "candidateIds": ["<candidateId1>", "<candidateId2>"],
+    "gamma": 0.1
+  }'
+
+# Example with real candidate IDs:
+curl -X POST http://localhost:8787/rerank \
+  -H "content-type: application/json" \
+  -d '{
+    "userEvents": [
+      {"role": "Research Assistant", "org": "Stanford", "acad_year": "sophomore"},
+      {"role": "Software Engineering Intern", "org": "Google", "acad_year": "junior"}
+    ],
+    "candidateIds": [
+      "193902b8eeba41edf0c1863c32edcaddf8af1bde",
+      "3be553d6da662848f23314ec4da04c4e5b5465d2"
     ]
   }'
 ```
@@ -142,6 +156,10 @@ The project uses a queue-based architecture with multiple stages:
 6. **Vectorize** - Vector database for semantic similarity search across career events
 7. **Workers AI** - Generates text embeddings for semantic understanding
 8. **Durable Object (ReRanker)** - Stateful re-ranking service using Soft-DTW algorithm for sequence similarity
+   - Loads candidate event sequences from D1 `event_vectors` table
+   - Embeds user's career events on-the-fly using Workers AI
+   - Computes Soft-DTW distance between sequences (considers order and timing)
+   - Returns similarity scores in (0,1] range (higher = better match)
 
 ### Verifying the Pipeline
 
