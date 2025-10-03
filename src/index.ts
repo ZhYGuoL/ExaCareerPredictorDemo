@@ -1,5 +1,6 @@
 import type { Env } from "./types";
 import { exaSearch } from "./lib/exa";
+import { embedEvent } from "./lib/embed";
 import ingestWorker from "./ingest-worker";
 
 export default {
@@ -111,6 +112,84 @@ export default {
         const id = env.RERANKER.idFromName("default");
         const stub = env.RERANKER.get(id);
         return await stub.fetch(req);
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+    
+    // POST /rank/final - End-to-end ranking pipeline
+    if (req.method === "POST" && url.pathname === "/rank/final") {
+      try {
+        const body = await req.json() as {
+          profile: { school: string; major: string; grad_year: number };
+          goal: { target_company: string; target_year: string };
+          userEvents: Array<{ role?: string; org?: string; acad_year?: string }>;
+          topK?: number;
+          topN?: number;
+          gamma?: number;
+        };
+        
+        const { profile, goal, userEvents, topK = 80, topN = 10, gamma = 0.1 } = body;
+
+        // 1) Embed userEvents
+        const X: number[][] = [];
+        for (const e of userEvents) {
+          const text = `${e.acad_year || ""} | ${e.role || ""} | ${e.org || ""}`.trim();
+          X.push(await embedEvent(env, text));
+        }
+
+        // 2) Build goal text & embed it for shortlist query
+        const goalText = `${goal.target_year} ${goal.target_company} software engineering`;
+        const goalVec = await embedEvent(env, goalText);
+
+        // 3) Shortlist from Vectorize
+        const shortlist = await env.VDB.query(goalVec, { topK });
+        
+        // Normalize to unique candidate IDs
+        // Extract candidate_id from metadata or from vector ID (format: candidateId:ord)
+        const allCandidates = (shortlist.matches || []).map((m: any) => {
+          return m.metadata?.candidate_id || m.id?.split(':')[0];
+        }).filter(Boolean);
+        
+        const candidateIds = Array.from(new Set(allCandidates)).slice(0, topK);
+
+        // If no candidates found, return empty results
+        if (candidateIds.length === 0) {
+          return new Response(JSON.stringify({ results: [] }), {
+            headers: { "content-type": "application/json" },
+          });
+        }
+
+        // 4) Call Durable Object for re-rank
+        const id = env.RERANKER.idFromName("global-reranker");
+        const stub = env.RERANKER.get(id);
+        const rerankRes = await stub.fetch("http://do/rerank", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ userEvents, candidateIds, gamma })
+        }).then(r => r.json()) as { results: Array<{ id: string; score: number }> };
+
+        const sorted = rerankRes.results.slice(0, topN);
+
+        // 5) Hydrate URLs from D1
+        const out = [];
+        for (const r of sorted) {
+          const row = await env.DB.prepare("SELECT url FROM candidates WHERE id = ?1")
+            .bind(r.id)
+            .first<{ url: string }>();
+          out.push({ 
+            candidate_id: r.id, 
+            score: r.score, 
+            url: row?.url || null 
+          });
+        }
+
+        return new Response(JSON.stringify({ results: out }), {
+          headers: { "content-type": "application/json" },
+        });
       } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), {
           status: 500,

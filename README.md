@@ -48,6 +48,7 @@ The server will start on `http://localhost:8787`
 
 - `GET /health` - Health check endpoint
 - `POST /ingest/start` - Start career path ingestion (generates queries, searches Exa, enqueues URLs)
+- `POST /rank/final` - **End-to-end ranking pipeline** (Vectorize shortlist → Soft-DTW re-rank → top-N results)
 - `POST /rerank` - Re-rank candidate sequences using Soft-DTW (Durable Object)
 - `GET /debug/exa?q=<query>` - Test Exa API integration
 - `GET /debug/r2?key=<path>` - Retrieve stored R2 object for debugging
@@ -98,6 +99,20 @@ curl -X POST http://localhost:8787/rerank \
       "193902b8eeba41edf0c1863c32edcaddf8af1bde",
       "3be553d6da662848f23314ec4da04c4e5b5465d2"
     ]
+  }'
+
+# End-to-end ranking (shortlist from Vectorize → re-rank with Soft-DTW → return top-N)
+curl -X POST http://localhost:8787/rank/final \
+  -H "content-type: application/json" \
+  -d '{
+    "profile": {"school": "MIT", "major": "CS", "grad_year": 2026},
+    "goal": {"target_company": "Meta", "target_year": "junior"},
+    "userEvents": [
+      {"role": "Software Engineer Intern", "org": "Google", "acad_year": "sophomore"}
+    ],
+    "topK": 50,
+    "topN": 5,
+    "gamma": 0.1
   }'
 ```
 
