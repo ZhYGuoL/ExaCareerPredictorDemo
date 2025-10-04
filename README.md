@@ -54,6 +54,7 @@ The server will start on `http://localhost:8787`
 - `POST /rerank` - Re-rank candidate sequences using Soft-DTW (Durable Object)
 - `GET /debug/exa?q=<query>` - Test Exa API integration
 - `GET /debug/r2?key=<path>` - Retrieve stored R2 object for debugging
+- `GET /debug/candidate?cid=<candidate_id>` - Fetch events for a specific candidate
 
 ### Web UI
 
@@ -76,7 +77,8 @@ Open `http://localhost:8787/` in your browser for an interactive interface:
      }
    ]
    ```
-4. **Click Search**: Results appear in a table with candidate IDs, scores, and URLs
+4. **Optional: Enable alignment visualization**: Check "Show event alignment" to see how your events map to candidate events (note: this is slower as it runs the full Soft-DTW traceback)
+5. **Click Search**: Results appear with candidate scores, URLs, and optionally alignment details
 
 The UI calls `/rank/final` behind the scenes and displays the top matching career paths.
 
@@ -330,6 +332,11 @@ The project uses a queue-based architecture with multiple stages:
    - Loads candidate event sequences from D1 `event_vectors` table
    - Embeds user's career events on-the-fly using Workers AI
    - Computes Soft-DTW distance between sequences (considers order and timing)
+   - **Alignment Visualization:** Optional traceback of Soft-DTW path
+     - When `includeAlign: true`, computes alignment path showing which user events map to which candidate events
+     - Returns array of `{x: userEventIndex, y: candidateEventIndex, dx: distance}` for each match
+     - Includes candidate event details (role, org, acad_year) for display
+     - UI renders alignment as a table showing event-to-event correspondence with similarity scores
    - **Blended Scoring:** Combines Soft-DTW with company similarity
      - **70% Soft-DTW:** Sequence similarity based on career trajectory
      - **30% Company Proximity:** Goal-based company similarity scoring
@@ -340,7 +347,7 @@ The project uses a queue-based architecture with multiple stages:
      - Company graph includes: Google/YouTube/DeepMind, Meta/Instagram/WhatsApp, Microsoft/LinkedIn/GitHub, Amazon/AWS
    - Returns similarity scores in (0,1] range (higher = better match)
    - **Caching:** In-memory cache with TTL (10 min) and LRU eviction (200 entry cap)
-     - Cache key: SHA-1 hash of `{userEvents, candidateIds, gamma, goal}`
+     - Cache key: SHA-1 hash of `{userEvents, candidateIds, gamma, goal, includeAlign}`
      - Repeated requests with identical inputs return cached results instantly
      - Response includes `cached: boolean` field for debugging
 
