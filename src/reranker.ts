@@ -64,6 +64,66 @@ function toSimilarity(dist: number): number {
   return 1 / (1 + dist); // map to (0,1]
 }
 
+// Soft-DTW with alignment trace
+function softDTWTrace(
+  X: number[][],
+  Y: number[][],
+  gamma = 0.1,
+): { dist: number; align: Array<{ x: number; y: number; dx: number }> } {
+  const m = X.length,
+    n = Y.length;
+  const D = Array.from({ length: m }, () => Array(n).fill(0));
+  for (let i = 0; i < m; i++) {
+    for (let j = 0; j < n; j++) {
+      D[i][j] = 1 - cosineSim(X[i], Y[j]);
+    }
+  }
+
+  // Soft-DTW DP with predecessor tracking
+  const R = Array.from({ length: m + 1 }, () => Array(n + 1).fill(Infinity));
+  const P = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0)); // 0=diag,1=up,2=left
+  R[0][0] = 0;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const a = R[i - 1][j],
+        b = R[i][j - 1],
+        c = R[i - 1][j - 1];
+      // Soft min for distance
+      const ea = Math.exp(-a / gamma),
+        eb = Math.exp(-b / gamma),
+        ec = Math.exp(-c / gamma);
+      const soft = -gamma * Math.log(ea + eb + ec);
+      R[i][j] = D[i - 1][j - 1] + soft;
+
+      // Hard choice for traceback (argmin)
+      if (c <= a && c <= b) P[i][j] = 0;
+      else if (a <= b) P[i][j] = 1;
+      else P[i][j] = 2;
+    }
+  }
+
+  // Traceback to get alignment path
+  const path: Array<{ x: number; y: number; dx: number }> = [];
+  let i = m,
+    j = n;
+  while (i > 0 && j > 0) {
+    path.push({ x: i - 1, y: j - 1, dx: D[i - 1][j - 1] });
+    const p = P[i][j];
+    if (p === 0) {
+      i--;
+      j--;
+    } else if (p === 1) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+  path.reverse();
+
+  return { dist: R[m][n], align: path };
+}
+
 async function loadSeq(env: Env, candidateId: string): Promise<number[][]> {
   const rs = await env.DB.prepare(
     'SELECT vec FROM event_vectors WHERE candidate_id = ?1 ORDER BY ord ASC',
@@ -156,15 +216,23 @@ export class ReRanker {
         candidateIds,
         gamma = 0.1,
         goal,
+        includeAlign = false,
       } = (await req.json()) as {
         userEvents: Array<{ role?: string; org?: string; acad_year?: string }>;
         candidateIds: string[];
         gamma?: number;
         goal?: { target_company?: string; target_year?: string };
+        includeAlign?: boolean;
       };
 
-      // Check cache (include goal in cache key)
-      const cacheKey = await sha1({ userEvents, candidateIds, gamma, goal });
+      // Check cache (include goal and includeAlign in cache key)
+      const cacheKey = await sha1({
+        userEvents,
+        candidateIds,
+        gamma,
+        goal,
+        includeAlign,
+      });
       const cached = this.cache.get(cacheKey);
       if (cached && Date.now() - cached.ts <= this.TTL_MS) {
         this.counters.cacheHits++;
@@ -199,7 +267,11 @@ export class ReRanker {
       // 2) Load candidate sequences
       const loadStart = Date.now();
       const targetCompany = goal?.target_company || 'google';
-      const scores: { id: string; score: number }[] = [];
+      const scores: Array<{
+        id: string;
+        score: number;
+        align?: Array<{ x: number; y: number; dx: number }>;
+      }> = [];
 
       for (const cid of candidateIds) {
         const Y = await loadSeq(this.env, cid);
@@ -208,8 +280,18 @@ export class ReRanker {
           continue;
         }
 
-        // Soft-DTW similarity
-        const dist = softDTWFromCosine(X, Y, gamma);
+        // Compute Soft-DTW (with or without alignment)
+        let dist: number;
+        let align: Array<{ x: number; y: number; dx: number }> | undefined;
+
+        if (includeAlign) {
+          const result = softDTWTrace(X, Y, gamma);
+          dist = result.dist;
+          align = result.align;
+        } else {
+          dist = softDTWFromCosine(X, Y, gamma);
+        }
+
         const softSim = toSimilarity(dist);
 
         // Goal proximity based on candidate's organizations
@@ -219,7 +301,7 @@ export class ReRanker {
         // Blended score: 70% Soft-DTW, 30% company proximity
         const blended = 0.7 * softSim + 0.3 * prox;
 
-        scores.push({ id: cid, score: blended });
+        scores.push({ id: cid, score: blended, align });
       }
       const loadMs = Date.now() - loadStart;
 

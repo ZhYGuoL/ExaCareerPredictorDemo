@@ -45,6 +45,7 @@ function ui(): Response {
   </div>
   <label>User Events (JSON)</label>
   <textarea id="events" rows="6" placeholder='[{"role":"Software Engineer Intern","org":"Google","acad_year":"sophomore"}]'></textarea>
+  <label><input type="checkbox" id="showAlign"> Show event alignment (slower)</label>
   <button id="go">Search</button>
   <div id="out"></div>
   <script>
@@ -53,25 +54,44 @@ function ui(): Response {
     const goal = { target_company: company.value, target_year: tyear.value };
     let userEvents = [];
     try { userEvents = JSON.parse(events.value || "[]"); } catch(e){ alert("Invalid JSON for events"); return; }
+    const includeAlign = showAlign.checked;
     out.innerHTML = '<p>Loading...</p>';
     try {
       const res = await fetch('/rank/final', {
         method:'POST', headers:{'content-type':'application/json'},
-        body: JSON.stringify({ profile, goal, userEvents, topK: 50, topN: 10, gamma: 0.1 })
+        body: JSON.stringify({ profile, goal, userEvents, topK: 50, topN: 10, gamma: 0.1, includeAlign })
       });
       const data = await res.json();
       if (data.error) {
         out.innerHTML = '<p style="color:red">Error: ' + data.error + '</p>';
         return;
       }
-      const rows = (data.results||[]).map(r=>\`
-        <tr>
-          <td>\${r.candidate_id}</td>
-          <td>\${(r.score||0).toFixed(4)}</td>
-          <td>\${r.url ? '<a href="'+r.url+'" target="_blank">open</a>' : ''}</td>
-        </tr>\`).join('');
-      if (rows) {
-        out.innerHTML = '<table><thead><tr><th>Candidate ID</th><th>Score</th><th>URL</th></tr></thead><tbody>'+rows+'</tbody></table>';
+      let html = '';
+      if (data.results && data.results.length > 0) {
+        for (const r of data.results) {
+          html += \`<div style="border:1px solid #ddd; padding:12px; margin:12px 0; border-radius:4px">
+            <h3 style="margin:0 0 8px 0">Candidate \${r.candidate_id.slice(0,8)}... (Score: \${(r.score||0).toFixed(4)})</h3>
+            \${r.url ? '<a href="'+r.url+'" target="_blank">View profile</a>' : ''}
+            \`;
+          if (includeAlign && r.align && r.candidateEvents) {
+            html += '<h4 style="margin:12px 0 4px 0">Event Alignment:</h4>';
+            html += '<table style="width:auto; font-size:13px"><thead><tr><th>Your Event</th><th>→</th><th>Their Event</th><th>Similarity</th></tr></thead><tbody>';
+            for (const a of r.align) {
+              const ue = userEvents[a.x];
+              const ce = r.candidateEvents[a.y];
+              const sim = (1 - a.dx).toFixed(3);
+              html += \`<tr>
+                <td>\${ue.acad_year||'?'}: \${ue.role||'?'} @ \${ue.org||'?'}</td>
+                <td>→</td>
+                <td>\${ce.acad_year||'?'}: \${ce.role||'?'} @ \${ce.org||'?'}</td>
+                <td>\${sim}</td>
+              </tr>\`;
+            }
+            html += '</tbody></table>';
+          }
+          html += '</div>';
+        }
+        out.innerHTML = html;
       } else {
         out.innerHTML = '<p>No results found. Try different criteria or ingest more data first.</p>';
       }
@@ -214,6 +234,35 @@ export default {
       }
     }
 
+    // GET /debug/candidate?cid=<candidate_id>
+    if (req.method === 'GET' && url.pathname === '/debug/candidate') {
+      const cid = url.searchParams.get('cid');
+      if (!cid) {
+        return new Response(
+          JSON.stringify({ error: 'Missing cid parameter' }),
+          {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+      try {
+        const rs = await env.DB.prepare(
+          'SELECT role, org, acad_year, ord FROM events WHERE candidate_id = ?1 ORDER BY ord ASC',
+        )
+          .bind(cid)
+          .all();
+        return new Response(JSON.stringify(rs.results || []), {
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    }
+
     // POST /rerank
     if (req.method === 'POST' && url.pathname === '/rerank') {
       try {
@@ -242,9 +291,17 @@ export default {
           topK?: number;
           topN?: number;
           gamma?: number;
+          includeAlign?: boolean;
         };
 
-        const { goal, userEvents, topK = 80, topN = 10, gamma = 0.1 } = body;
+        const {
+          goal,
+          userEvents,
+          topK = 80,
+          topN = 10,
+          gamma = 0.1,
+          includeAlign = false,
+        } = body;
 
         // 1) Embed userEvents
         const X: number[][] = [];
@@ -285,16 +342,26 @@ export default {
           .fetch('http://do/rerank', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ userEvents, candidateIds, gamma, goal }),
+            body: JSON.stringify({
+              userEvents,
+              candidateIds,
+              gamma,
+              goal,
+              includeAlign,
+            }),
           })
           .then((r) => r.json())) as {
-          results: Array<{ id: string; score: number }>;
+          results: Array<{
+            id: string;
+            score: number;
+            align?: Array<{ x: number; y: number; dx: number }>;
+          }>;
           cached?: boolean;
         };
 
         const sorted = rerankRes.results.slice(0, topN);
 
-        // 5) Hydrate URLs from D1
+        // 5) Hydrate URLs from D1 and optionally fetch candidate events
         const out = [];
         for (const r of sorted) {
           const row = await env.DB.prepare(
@@ -302,10 +369,30 @@ export default {
           )
             .bind(r.id)
             .first<{ url: string }>();
+
+          // Fetch candidate events if alignment is included
+          let candidateEvents: Array<{
+            role: string;
+            org: string;
+            acad_year: string;
+            ord: number;
+          }> = [];
+
+          if (includeAlign && r.align) {
+            const eventsRes = await env.DB.prepare(
+              'SELECT role, org, acad_year, ord FROM events WHERE candidate_id = ?1 ORDER BY ord ASC',
+            )
+              .bind(r.id)
+              .all();
+            candidateEvents = eventsRes.results as any;
+          }
+
           out.push({
             candidate_id: r.id,
             score: r.score,
             url: row?.url || null,
+            align: r.align,
+            candidateEvents: includeAlign ? candidateEvents : undefined,
           });
         }
 

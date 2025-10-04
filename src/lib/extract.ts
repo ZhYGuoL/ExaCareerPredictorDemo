@@ -61,13 +61,15 @@ Rules:
         acad_year: ['freshman', 'sophomore', 'junior', 'senior'].includes(
           (e.acad_year || '').toLowerCase(),
         )
-          ? (e.acad_year || 'unknown')
+          ? e.acad_year || 'unknown'
           : 'unknown',
         ord: i,
       }));
 
       if (sanitized.length > 0) {
-        console.log(`[LLM Extract] Found ${sanitized.length} events (attempt ${attempt + 1})`);
+        console.log(
+          `[LLM Extract] Found ${sanitized.length} events (attempt ${attempt + 1})`,
+        );
         return sanitized;
       }
     } catch (err) {

@@ -64,8 +64,16 @@ Open `http://localhost:8787/` in your browser for an interactive interface:
 3. **Add your events**: Paste JSON array of your career timeline events:
    ```json
    [
-     {"role":"Research Assistant","org":"Stanford AI Lab","acad_year":"freshman"},
-     {"role":"Software Engineer Intern","org":"Google","acad_year":"sophomore"}
+     {
+       "role": "Research Assistant",
+       "org": "Stanford AI Lab",
+       "acad_year": "freshman"
+     },
+     {
+       "role": "Software Engineer Intern",
+       "org": "Google",
+       "acad_year": "sophomore"
+     }
    ]
    ```
 4. **Click Search**: Results appear in a table with candidate IDs, scores, and URLs
@@ -215,12 +223,14 @@ The system uses **Workers AI** (Llama 3.1 8B Instruct) for intelligent event ext
 ### How It Works
 
 **LLM Extraction** (`extractLLM`):
+
 1. Sends page text to Workers AI with structured JSON prompt
 2. Requests specific schema: `{events: [{role, org, start_iso, end_iso, acad_year, ord}]}`
 3. Retries up to 2 times if JSON parsing fails
 4. Falls back to heuristic keyword extraction if LLM fails
 
 **Heuristic Fallback** (`extractEvents`):
+
 - Searches for keywords: "intern", "research", "offer"
 - Extracts matching lines as events
 - Always available as a safety net
@@ -228,12 +238,14 @@ The system uses **Workers AI** (Llama 3.1 8B Instruct) for intelligent event ext
 ### Extraction Quality
 
 The LLM extractor provides:
+
 - **Better accuracy**: Understands context and relationships
 - **Structured data**: Extracts company names, roles, dates, and academic years
 - **Resilience**: Automatic fallback ensures data is never lost
 - **Cost-effective**: Only runs on ingestion (cached afterward)
 
 Example extracted event:
+
 ```json
 {
   "role": "Software Engineering Intern",
@@ -248,8 +260,9 @@ Example extracted event:
 ### Monitoring
 
 Watch for these log messages:
+
 - `[LLM Extract] Found N events (attempt 1)` - Successful extraction
-- `[LLM Extract] Attempt N failed: ...` - Retry in progress  
+- `[LLM Extract] Attempt N failed: ...` - Retry in progress
 - `[LLM Extract] Falling back to heuristic extraction` - Using fallback
 
 ## Scripts
