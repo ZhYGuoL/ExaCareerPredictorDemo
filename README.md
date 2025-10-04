@@ -277,6 +277,7 @@ Watch for these log messages:
 - `npm run check` - Run type checking and linting (CI equivalent)
 - `npm run migrate` - Apply D1 database migrations (local)
 - `npm run sql -- "SQL_QUERY" -- --local` - Execute SQL queries on local database
+- `npm run loadtest` - Run load test against `/rank/final` endpoint (see Performance Testing below)
 
 ## Database Schema
 
@@ -482,3 +483,104 @@ View CI status in the "Actions" tab on GitHub.
 - Run `npm run format` before committing to auto-fix formatting
 - Run `npm run check` locally before pushing to catch issues early
 - All CI checks must pass before merging PRs
+
+## Performance Testing
+
+The project includes a load testing script to validate performance and caching behavior:
+
+### Basic Usage
+
+```bash
+npm run loadtest
+```
+
+This runs the default test: **100 requests** with **10 concurrent workers** against `http://localhost:8787/rank/final`.
+
+### Custom Parameters
+
+```bash
+npx ts-node scripts/loadtest.ts <URL> <TOTAL_REQUESTS> <CONCURRENCY>
+```
+
+**Examples:**
+
+```bash
+# 50 requests, 5 concurrent
+npx ts-node scripts/loadtest.ts http://localhost:8787/rank/final 50 5
+
+# 500 requests, 20 concurrent (stress test)
+npx ts-node scripts/loadtest.ts http://localhost:8787/rank/final 500 20
+
+# Test production endpoint
+npx ts-node scripts/loadtest.ts https://your-worker.workers.dev/rank/final 100 10
+```
+
+### Metrics Reported
+
+The script tracks and reports:
+
+- **total**: Number of requests sent
+- **conc**: Concurrency level (parallel workers)
+- **ok**: Number of successful requests (HTTP 2xx)
+- **qps**: Queries per second (throughput)
+- **p50**: Median latency (milliseconds)
+- **p95**: 95th percentile latency (milliseconds)
+- **cached**: Number of cache hits from ReRanker DO
+- **cacheRate**: Percentage of requests served from cache
+
+**Example Output:**
+
+```json
+{
+  "total": 100,
+  "conc": 10,
+  "ok": 100,
+  "qps": "42.55",
+  "p50": 185,
+  "p95": 320,
+  "cached": 95,
+  "cacheRate": "95.0%"
+}
+```
+
+### What It Tests
+
+The load test uses a **fixed payload** (same user events, profile, and goal) to:
+
+1. **Validate caching behavior** - First request is cold, subsequent requests should be cached
+2. **Measure cold vs. warm latency** - Compare p50 on first run vs. cached runs
+3. **Test concurrency handling** - Verify the system handles parallel requests correctly
+4. **Identify bottlenecks** - High p95 latency indicates potential issues
+
+### Testing Caching
+
+To see caching in action:
+
+```bash
+# First run (cold cache)
+npm run loadtest
+
+# Second run immediately (warm cache)
+npm run loadtest
+```
+
+The second run should show:
+- **Higher QPS** (less compute needed)
+- **Lower p50/p95** (cache is faster)
+- **100% cache rate** (all requests hit cache)
+
+### Stress Testing
+
+To find performance limits:
+
+```bash
+# Gradually increase concurrency
+npx ts-node scripts/loadtest.ts http://localhost:8787/rank/final 200 20
+npx ts-node scripts/loadtest.ts http://localhost:8787/rank/final 200 50
+npx ts-node scripts/loadtest.ts http://localhost:8787/rank/final 200 100
+```
+
+Watch for:
+- **QPS plateauing** (hit throughput limit)
+- **p95 increasing sharply** (system under stress)
+- **Errors** (ok < total, indicates failures)
