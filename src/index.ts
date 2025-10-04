@@ -93,7 +93,7 @@ function ui(): Response {
         method:'POST', headers:{'content-type':'application/json'},
         body: JSON.stringify({ 
           profile, goal, userEvents, 
-          topK: 120, 
+          topK: 100, 
           topN: pageNum * pageSizeNum, 
           gamma: 0.1, 
           includeAlign,
