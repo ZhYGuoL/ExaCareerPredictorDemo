@@ -45,7 +45,30 @@ function ui(): Response {
   </div>
   <label>User Events (JSON)</label>
   <textarea id="events" rows="6" placeholder='[{"role":"Software Engineer Intern","org":"Google","acad_year":"sophomore"}]'></textarea>
-  <label><input type="checkbox" id="showAlign"> Show event alignment (slower)</label>
+  
+  <h3 style="margin-top:20px">Filters & Options</h3>
+  <div class="row">
+    <div><label>Filter School <input id="f_school" placeholder="e.g., MIT"></label></div>
+    <div><label>Filter Degree <input id="f_degree" placeholder="e.g., CS"></label></div>
+  </div>
+  <div class="row">
+    <div>
+      <label>Company Tier
+        <select id="f_tier">
+          <option value="">Any</option>
+          <option value="faang">FAANG</option>
+          <option value="bigtech">Big Tech</option>
+          <option value="startup">Startup</option>
+        </select>
+      </label>
+    </div>
+    <div><label><input type="checkbox" id="showAlign"> Show event alignment (slower)</label></div>
+  </div>
+  <div class="row">
+    <div><label>Page <input id="page" type="number" value="1" min="1"></label></div>
+    <div><label>Page Size <input id="pageSize" type="number" value="10" min="1" max="50"></label></div>
+  </div>
+  
   <button id="go">Search</button>
   <div id="out"></div>
   <script>
@@ -54,12 +77,30 @@ function ui(): Response {
     const goal = { target_company: company.value, target_year: tyear.value };
     let userEvents = [];
     try { userEvents = JSON.parse(events.value || "[]"); } catch(e){ alert("Invalid JSON for events"); return; }
+    
+    const filters = {
+      school: document.getElementById('f_school').value || null,
+      degree: document.getElementById('f_degree').value || null,
+      company_tier: document.getElementById('f_tier').value || null
+    };
     const includeAlign = showAlign.checked;
+    const pageNum = Number(document.getElementById('page').value || 1);
+    const pageSizeNum = Number(document.getElementById('pageSize').value || 10);
+    
     out.innerHTML = '<p>Loading...</p>';
     try {
       const res = await fetch('/rank/final', {
         method:'POST', headers:{'content-type':'application/json'},
-        body: JSON.stringify({ profile, goal, userEvents, topK: 50, topN: 10, gamma: 0.1, includeAlign })
+        body: JSON.stringify({ 
+          profile, goal, userEvents, 
+          topK: 120, 
+          topN: pageNum * pageSizeNum, 
+          gamma: 0.1, 
+          includeAlign,
+          filters,
+          page: pageNum,
+          pageSize: pageSizeNum
+        })
       });
       const data = await res.json();
       if (data.error) {
@@ -68,6 +109,12 @@ function ui(): Response {
       }
       let html = '';
       if (data.results && data.results.length > 0) {
+        // Show pagination info
+        html += \`<div style="background:#f7f7f7; padding:12px; margin:12px 0; border-radius:4px">
+          <strong>Results:</strong> Showing page \${data.page || pageNum} of \${Math.ceil((data.total||0)/pageSizeNum)} 
+          (Total: \${data.total||0} candidates, Page size: \${data.pageSize || pageSizeNum})
+        </div>\`;
+        
         for (const r of data.results) {
           html += \`<div style="border:1px solid #ddd; padding:12px; margin:12px 0; border-radius:4px">
             <h3 style="margin:0 0 8px 0">Candidate \${r.candidate_id.slice(0,8)}... (Score: \${(r.score||0).toFixed(4)})</h3>
@@ -292,6 +339,13 @@ export default {
           topN?: number;
           gamma?: number;
           includeAlign?: boolean;
+          filters?: {
+            school?: string | null;
+            degree?: string | null;
+            company_tier?: string | null;
+          };
+          page?: number;
+          pageSize?: number;
         };
 
         const {
@@ -301,6 +355,9 @@ export default {
           topN = 10,
           gamma = 0.1,
           includeAlign = false,
+          filters,
+          page = 1,
+          pageSize = 10,
         } = body;
 
         // 1) Embed userEvents
@@ -315,8 +372,17 @@ export default {
         const goalText = `${goal.target_year} ${goal.target_company} software engineering`;
         const goalVec = await embedEvent(env, goalText);
 
-        // 3) Shortlist from Vectorize
-        const shortlist = await env.VDB.query(goalVec, { topK });
+        // 3) Build filter object for Vectorize query
+        const filter: any = {};
+        if (filters?.school) filter.school = filters.school;
+        if (filters?.degree) filter.degree = filters.degree;
+        if (filters?.company_tier) filter.company_tier = filters.company_tier;
+
+        // 4) Shortlist from Vectorize with optional filters
+        const shortlist = await env.VDB.query(goalVec, {
+          topK,
+          filter: Object.keys(filter).length > 0 ? filter : undefined,
+        });
 
         // Normalize to unique candidate IDs
         // Extract candidate_id from metadata or from vector ID (format: candidateId:ord)
@@ -359,11 +425,17 @@ export default {
           cached?: boolean;
         };
 
-        const sorted = rerankRes.results.slice(0, topN);
+        const sorted = rerankRes.results;
+        const total = sorted.length;
 
-        // 5) Hydrate URLs from D1 and optionally fetch candidate events
+        // 5) Apply pagination to re-ranked results
+        const start = Math.max(0, (page - 1) * pageSize);
+        const end = start + pageSize;
+        const paged = sorted.slice(start, end);
+
+        // 6) Hydrate URLs from D1 and optionally fetch candidate events
         const out = [];
-        for (const r of sorted) {
+        for (const r of paged) {
           const row = await env.DB.prepare(
             'SELECT url FROM candidates WHERE id = ?1',
           )
@@ -399,6 +471,9 @@ export default {
         return new Response(
           JSON.stringify({
             results: out,
+            total,
+            page,
+            pageSize,
             cached: rerankRes.cached || false,
           }),
           {
