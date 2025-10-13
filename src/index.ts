@@ -379,6 +379,19 @@ export default {
         if (filters?.company_tier) filter.company_tier = filters.company_tier;
 
         // 4) Shortlist from Vectorize with optional filters
+        if (!env.VDB) {
+          return new Response(
+            JSON.stringify({
+              error:
+                'Vectorize (VDB) not available. Please deploy to production or ensure VDB binding is configured.',
+            }),
+            {
+              status: 503,
+              headers: { 'content-type': 'application/json' },
+            },
+          );
+        }
+        
         const shortlist = await env.VDB.query(goalVec, {
           topK,
           filter: Object.keys(filter).length > 0 ? filter : undefined,

@@ -35,7 +35,8 @@ index_name = "career-events"
 [[d1_databases]]
 binding = "DB"
 database_name = "app"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "3230e3bc-d6ba-4f29-9ad9-7b929eeeae7a"
+preview_database_id = "f3c20ed4-c7a0-4d28-bc8a-4f24cf659979"
 
 [[queues.producers]]
 binding = "INGEST_QUEUE"
@@ -49,6 +50,7 @@ max_batch_timeout = 30
 [[r2_buckets]]
 binding = "BLOB"
 bucket_name = "raw-artifacts"
+preview_bucket_name = "raw-artifacts-preview"
 
 [[durable_objects.bindings]]
 name = "RERANKER"

@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "dev:remote": "wrangler dev --remote",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "migrate": "wrangler d1 migrations apply app --local",
