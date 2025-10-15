@@ -14,11 +14,57 @@ async function hashUrl(url: string): Promise<string> {
     .join('');
 }
 
+// Filter function to check if a URL is likely a person's profile
+function isPersonProfile(url: string): boolean {
+  // LinkedIn profile URLs follow the pattern linkedin.com/in/username
+  if (url.includes('linkedin.com/in/')) {
+    return true;
+  }
+
+  // Reject job listings, applications, posts, and non-profile URLs
+  const nonProfilePatterns = [
+    '/job/',
+    '/jobs/',
+    'job-listing',
+    'talentsprint',
+    'talentify',
+    'glassdoor',
+    'builtin',
+    'workday',
+    '/applications/',
+    'jointaro',
+    'reddit.com',
+    'chronicle.com',
+    'linkedin.com/posts/',
+    'activity-',
+    '/job',
+    'careers',
+    'ziprecruiter',
+    'indeed',
+    'pulse'
+  ];
+  
+  for (const pattern of nonProfilePatterns) {
+    if (url.includes(pattern)) {
+      return false;
+    }
+  }
+
+  // For other URLs, let's assume they might be personal websites
+  return true;
+}
+
 export default {
   async queue(batch: MessageBatch<string>, env: Env) {
     for (const msg of batch.messages) {
       const url = msg.body;
       try {
+        // Skip URLs that are not likely person profiles
+        if (!isPersonProfile(url)) {
+          console.log(`Skipping non-profile URL: ${url}`);
+          msg.ack();
+          continue;
+        }
         const page = await exaContents(env, [url]);
         const key = `raw/${await hashUrl(url)}.json`;
         await env.BLOB.put(key, JSON.stringify(page));
