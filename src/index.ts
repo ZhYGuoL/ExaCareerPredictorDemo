@@ -73,36 +73,78 @@ function ui(): Response {
   <div id="out"></div>
   <script>
   async function go(){
-    const profile = { school: school.value, major: major.value, grad_year: Number(grad.value||0) };
-    const goal = { target_company: company.value, target_year: tyear.value };
+    // Get form values with defaults and timestamps to ensure requests aren't duplicated
+    const timestamp = new Date().getTime();
+    
+    // Check for required fields and show alert if missing
+    if (!school.value.trim()) {
+      alert("Please enter a school name - this is required for proper ranking.");
+      return;
+    }
+    
+    if (!company.value.trim()) {
+      alert("Please enter a target company name.");
+      return;
+    }
+    
+    const profile = { 
+      school: school.value.trim(), 
+      major: major.value.trim() || 'Computer Science', 
+      grad_year: Number(grad.value||0),
+      _ts: timestamp // Add timestamp to force cache miss
+    };
+    const goal = { 
+      target_company: company.value.trim() || 'Google', 
+      target_year: tyear.value || 'junior',
+      _ts: timestamp
+    };
+    
     let userEvents = [];
-    try { userEvents = JSON.parse(events.value || "[]"); } catch(e){ alert("Invalid JSON for events"); return; }
+    try { 
+      userEvents = JSON.parse(events.value || "[]"); 
+    } catch(e){ 
+      alert("Invalid JSON for events"); 
+      return; 
+    }
     
     const filters = {
       school: document.getElementById('f_school').value || null,
       degree: document.getElementById('f_degree').value || null,
-      company_tier: document.getElementById('f_tier').value || null
+      company_tier: document.getElementById('f_tier').value || null,
+      _ts: timestamp
     };
+    
     const includeAlign = showAlign.checked;
     const pageNum = Number(document.getElementById('page').value || 1);
     const pageSizeNum = Number(document.getElementById('pageSize').value || 10);
     
     out.innerHTML = '<p>Loading...</p>';
+    
+    // Add cache busting query parameter
+    const searchParams = new URLSearchParams({cacheBust: timestamp.toString()});
+    
     try {
-      const res = await fetch('/rank/final', {
-        method:'POST', headers:{'content-type':'application/json'},
+      const res = await fetch('/rank/final?' + searchParams.toString(), {
+        method:'POST', 
+        headers:{'content-type':'application/json'},
         body: JSON.stringify({ 
-          profile, goal, userEvents, 
+          profile, 
+          goal, 
+          userEvents, 
           topK: 100, 
           topN: pageNum * pageSizeNum, 
           gamma: 0.1, 
           includeAlign,
           filters,
           page: pageNum,
-          pageSize: pageSizeNum
+          pageSize: pageSizeNum,
+          _ts: timestamp // Add timestamp to request body too
         })
       });
       const data = await res.json();
+      
+      // No raw response debugging needed
+      
       if (data.error) {
         out.innerHTML = '<p style="color:red">Error: ' + data.error + '</p>';
         return;
@@ -120,6 +162,19 @@ function ui(): Response {
             <h3 style="margin:0 0 8px 0">Candidate \${r.candidate_id.slice(0,8)}... (Score: \${(r.score||0).toFixed(4)})</h3>
             \${r.url ? '<a href="'+r.url+'" target="_blank">View profile</a>' : ''}
             \`;
+            
+          // Show score breakdown if available
+          if (r.scoreBreakdown) {
+            const sb = r.scoreBreakdown;
+            html += \`<div style="font-size:12px; margin:8px 0; padding:8px; background:#f7f7f7; border-radius:4px">
+              <strong>Score Breakdown:</strong>
+              <ul style="margin:4px 0; padding-left:20px">
+                <li>University Match: \${(sb.universitySimilarity * 100).toFixed(1)}%</li>
+                <li>Career Path: \${(sb.careerSimilarity * 100).toFixed(1)}%</li>
+                <li>Target Company: \${(sb.companyProximity * 100).toFixed(1)}%</li>
+              </ul>
+            </div>\`
+          }
           if (includeAlign && r.align && r.candidateEvents) {
             html += '<h4 style="margin:12px 0 4px 0">Event Alignment:</h4>';
             html += '<table style="width:auto; font-size:13px"><thead><tr><th>Your Event</th><th>→</th><th>Their Event</th><th>Similarity</th></tr></thead><tbody>';
@@ -325,8 +380,13 @@ export default {
     }
 
     // POST /rank/final - End-to-end ranking pipeline
-    if (req.method === 'POST' && url.pathname === '/rank/final') {
+    if (req.method === 'POST' && url.pathname.startsWith('/rank/final')) {
       try {
+        // Log cache busting param to ensure we're getting it
+        const cacheBust = url.searchParams.get('cacheBust');
+        if (cacheBust) {
+          console.log(`Cache bust: ${cacheBust}`);
+        }
         const body = (await req.json()) as {
           profile: { school: string; major: string; grad_year: number };
           goal: { target_company: string; target_year: string };
@@ -369,7 +429,17 @@ export default {
         }
 
         // 2) Build goal text & embed it for shortlist query
-        const goalText = `${goal.target_year} ${goal.target_company} software engineering`;
+        // Include school and major to ensure embedding captures these criteria
+        // Using stronger weighting for school by repeating it multiple times
+        const schoolInfo = body.profile?.school 
+          ? `${body.profile.school} ${body.profile.school} ${body.profile.school} ` 
+          : '';
+        const majorInfo = body.profile?.major ? `${body.profile.major} ` : '';
+        const goalText = `${schoolInfo}${majorInfo}${goal.target_year} ${goal.target_company} software engineering`;
+        
+        // Log the search criteria for debugging
+        console.log(`Search criteria - School: ${body.profile?.school || 'none'}, Major: ${body.profile?.major || 'none'}, Target: ${goal.target_company}, Year: ${goal.target_year}`);
+        console.log(`Goal text: ${goalText}`);
         const goalVec = await embedEvent(env, goalText);
 
         // 3) Build filter object for Vectorize query
@@ -426,6 +496,7 @@ export default {
               candidateIds,
               gamma,
               goal,
+              profile: body.profile, // Pass profile info including school for university similarity
               includeAlign,
             }),
           })
@@ -434,6 +505,11 @@ export default {
             id: string;
             score: number;
             align?: Array<{ x: number; y: number; dx: number }>;
+            debugInfo?: {
+              careerSimilarity: number;
+              universitySimilarity: number;
+              companyProximity: number;
+            };
           }>;
           cached?: boolean;
         };
@@ -478,6 +554,7 @@ export default {
             url: row?.url || null,
             align: r.align,
             candidateEvents: includeAlign ? candidateEvents : undefined,
+            scoreBreakdown: r.debugInfo,
           });
         }
 

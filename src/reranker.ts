@@ -64,6 +64,71 @@ function toSimilarity(dist: number): number {
   return 1 / (1 + dist); // map to (0,1]
 }
 
+// Calculate university similarity score between user's school and candidate's education
+function calculateUniversitySimilarity(userSchool: string | undefined, candidateEducation: string[]): number {
+  if (!userSchool || !candidateEducation || candidateEducation.length === 0) return 0;
+  
+  // Normalize university names
+  const normalizedUserSchool = userSchool.toLowerCase().trim();
+  
+  // Common university abbreviations and aliases
+  const universityAliases: Record<string, string[]> = {
+    'mit': ['massachusetts institute of technology'],
+    'cmu': ['carnegie mellon', 'carnegie-mellon'],
+    'stanford': ['stanford university'],
+    'berkeley': ['uc berkeley', 'university of california berkeley', 'university of california, berkeley'],
+    'harvard': ['harvard university'],
+    'princeton': ['princeton university'],
+    'yale': ['yale university'],
+    'columbia': ['columbia university'],
+    'cornell': ['cornell university'],
+    'ucla': ['university of california los angeles', 'university of california, los angeles'],
+    'michigan': ['university of michigan', 'umich'],
+    'gatech': ['georgia tech', 'georgia institute of technology'],
+    'uiuc': ['university of illinois urbana-champaign', 'university of illinois at urbana-champaign'],
+    'caltech': ['california institute of technology'],
+    'waterloo': ['university of waterloo']
+  };
+  
+  // Check for exact matches, common abbreviations, or partial matches
+  let bestScore = 0;
+  
+  for (const eduInfo of candidateEducation) {
+    const normalizedEduInfo = eduInfo.toLowerCase().trim();
+    
+    // Check for exact match
+    if (normalizedEduInfo.includes(normalizedUserSchool)) {
+      return 1.0; // Perfect match
+    }
+    
+    // Check all possible aliases/variations of the school name
+    for (const [abbr, aliases] of Object.entries(universityAliases)) {
+      if ((normalizedUserSchool.includes(abbr) || aliases.some(a => normalizedUserSchool.includes(a))) && 
+          (normalizedEduInfo.includes(abbr) || aliases.some(a => normalizedEduInfo.includes(a)))) {
+        return 1.0; // Match through aliases
+      }
+    }
+    
+    // Calculate partial match using word overlap
+    const userWords = normalizedUserSchool.split(/\s+/);
+    let wordMatches = 0;
+    
+    for (const word of userWords) {
+      if (word.length > 2 && normalizedEduInfo.includes(word)) {
+        wordMatches++;
+      }
+    }
+    
+    // Score based on word matches (higher with more matching words)
+    if (userWords.length > 0) {
+      const score = wordMatches / userWords.length;
+      if (score > bestScore) bestScore = score;
+    }
+  }
+  
+  return bestScore;
+}
+
 // Soft-DTW with alignment trace
 function softDTWTrace(
   X: number[][],
@@ -153,9 +218,42 @@ async function loadCandidateOrgs(
   return (rs.results || []).map((r: any) => r.org).filter(Boolean);
 }
 
+// Extract education/school information from candidate events
+async function loadCandidateEducation(
+  env: Env,
+  candidateId: string,
+): Promise<string[]> {
+  // First check if we have school directly in candidates table
+  const schoolRs = await env.DB.prepare(
+    'SELECT school FROM candidates WHERE id = ?1 AND school IS NOT NULL',
+  )
+    .bind(candidateId)
+    .first<{ school: string }>();
+  
+  if (schoolRs?.school) {
+    console.log(`Found school for ${candidateId}: ${schoolRs.school}`);
+    return [schoolRs.school]; // Direct school match
+  }
+  
+  // Fall back to looking for education in events
+  const rs = await env.DB.prepare(
+    'SELECT role, org FROM events WHERE candidate_id = ?1 AND (role LIKE "%student%" OR role LIKE "%Bachelor%" OR role LIKE "%Master%" OR role LIKE "%PhD%" OR role LIKE "%graduate%" OR role LIKE "%undergrad%" OR role LIKE "%education%") ORDER BY ord ASC',
+  )
+    .bind(candidateId)
+    .all();
+  
+  // Return both roles and orgs as they might contain university information
+  const education: string[] = [];
+  for (const row of (rs.results || [])) {
+    if (row.role && typeof row.role === 'string') education.push(row.role);
+    if (row.org && typeof row.org === 'string') education.push(row.org);
+  }
+  return education.filter(Boolean);
+}
+
 export class ReRanker {
   private cache = new Map<string, CacheEntry>(); // key -> { value, ts }
-  private TTL_MS = 10 * 60 * 1000; // 10 minutes
+  private TTL_MS = 0; // No caching - always recalculate for testing
   private MAX_SIZE = 200;
   private counters = { totalRequests: 0, cacheHits: 0, reranks: 0, errors: 0 };
 
@@ -217,31 +315,39 @@ export class ReRanker {
         gamma = 0.1,
         goal,
         includeAlign = false,
+        profile,
       } = (await req.json()) as {
         userEvents: Array<{ role?: string; org?: string; acad_year?: string }>;
         candidateIds: string[];
         gamma?: number;
         goal?: { target_company?: string; target_year?: string };
         includeAlign?: boolean;
+        profile?: { school?: string; major?: string; grad_year?: number };
       };
 
-      // Check cache (include goal and includeAlign in cache key)
+      // Generate cache key but always skip cache lookup
       const cacheKey = await sha1({
         userEvents,
         candidateIds,
         gamma,
         goal,
+        profile,
         includeAlign,
+        timestamp: Date.now(), // Add timestamp to ensure uniqueness
       });
-      const cached = this.cache.get(cacheKey);
-      if (cached && Date.now() - cached.ts <= this.TTL_MS) {
+      
+      // Skip cache lookup - always calculate fresh results
+      console.log(`Forced cache MISS [${reqId}] - timestamp: ${Date.now()}`);
+      
+      // Keep the code below for debugging purposes, but we'll never enter this block
+      if (false) {
         this.counters.cacheHits++;
         this.touch(cacheKey);
         const totalMs = Date.now() - t0;
         console.log(`Cache HIT [${reqId}] ${totalMs}ms`);
         return new Response(
           JSON.stringify({
-            results: cached.value,
+            results: [],
             cached: true,
             reqId,
             timings: { totalMs },
@@ -252,7 +358,7 @@ export class ReRanker {
         );
       }
 
-      console.log(`Cache MISS [${reqId}]`);
+      // Already logged cache miss
 
       // 1) Embed user events
       const embedStart = Date.now();
@@ -297,11 +403,47 @@ export class ReRanker {
         // Goal proximity based on candidate's organizations
         const orgs = await loadCandidateOrgs(this.env, cid);
         const prox = goalProximity(orgs, targetCompany);
+        
+        // University similarity based on candidate's education
+        let universitySimilarity = 0;
+        if (profile?.school) {
+          const education = await loadCandidateEducation(this.env, cid);
+          universitySimilarity = calculateUniversitySimilarity(profile.school, education);
+        }
 
-        // Blended score: 70% Soft-DTW, 30% company proximity
-        const blended = 0.7 * softSim + 0.3 * prox;
+        // Blended score with weights:
+        // - 40% Soft-DTW (career path similarity)
+        // - 40% university similarity (increased as requested)
+        // - 20% company proximity
+        const blended = 0.4 * softSim + 0.4 * universitySimilarity + 0.2 * prox;
+        
+        // Log score breakdown for debugging
+        console.log(`Score for ${cid}: Career=${softSim.toFixed(3)}, University=${universitySimilarity.toFixed(3)}, Company=${prox.toFixed(3)}, Final=${blended.toFixed(3)}`);
 
-        scores.push({ id: cid, score: blended, align });
+        // Create the base result object
+        const result: {
+          id: string;
+          score: number;
+          align?: Array<{ x: number; y: number; dx: number }>;
+          debugInfo?: {
+            careerSimilarity: number;
+            universitySimilarity: number;
+            companyProximity: number;
+          };
+        } = {
+          id: cid,
+          score: blended,
+          align
+        };
+        
+        // Add debug info separately
+        result.debugInfo = {
+          careerSimilarity: softSim,
+          universitySimilarity: universitySimilarity,
+          companyProximity: prox
+        };
+        
+        scores.push(result);
       }
       const loadMs = Date.now() - loadStart;
 
