@@ -6,4 +6,5 @@ export interface Env {
   BLOB: R2Bucket;
   RERANKER: DurableObjectNamespace;
   AI: any; // Workers AI binding
+  WEBSET_ID?: string; // Exa Websets ID for profile search
 }

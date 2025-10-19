@@ -8,6 +8,14 @@ compatibility_date = "2025-09-29"
 # For local development: Set EXA_KEY in .dev.vars file (not committed to git)
 # For production: Set as a secret via Cloudflare Dashboard or:
 #   wrangler secret put EXA_KEY
+#
+# Optional: Set WEBSET_ID for Exa Websets integration:
+#   wrangler secret put WEBSET_ID
+#
+# You can create a new Webset using the /webset/create endpoint:
+#   curl -X POST https://your-worker-url/webset/create \
+#     -H "Content-Type: application/json" \
+#     -d '{"name":"LinkedIn Profiles","description":"Candidate profiles for career matching"}'
 # ============================================================================
 
 # ============================================================================

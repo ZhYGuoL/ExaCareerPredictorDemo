@@ -1,5 +1,5 @@
 import type { Env } from './types';
-import { exaSearch } from './lib/exa';
+import { exaSearch, exaWebsetsSearch, createProfilesWebset, addUrlsToWebset } from './lib/exa';
 import { embedEvent } from './lib/embed';
 import ingestWorker from './ingest-worker';
 
@@ -243,35 +243,131 @@ export default {
       }
     }
 
+    // POST /webset/create
+    if (req.method === 'POST' && url.pathname === '/webset/create') {
+      try {
+        const { name, description } = (await req.json()) as {
+          name: string;
+          description: string;
+        };
+        
+        // Create a new Webset
+        const webset = await createProfilesWebset(env, name, description);
+        const websetId = (webset as any).id;
+        console.log(`Created new Webset: ${websetId} - ${name}`);
+        
+        return new Response(JSON.stringify({ 
+          websetId: websetId,
+          message: `Created new Webset: ${name}` 
+        }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    }
+
     // POST /ingest/start
     if (req.method === 'POST' && url.pathname === '/ingest/start') {
       try {
-        const { profile, goal } = (await req.json()) as {
+        const { profile, goal, websetId } = (await req.json()) as {
           profile: { school: string; major: string };
           goal: { target_company: string; target_year: string };
+          websetId?: string; // Optional: Use specific Webset ID
         };
-
-        // Generate queries
+        
+        // Use provided Webset ID or environment variable
+        const activeWebsetId = websetId || env.WEBSET_ID;
+        
+        if (!activeWebsetId) {
+          // If no Webset ID is available, fall back to legacy search
+          console.log("No Webset ID provided - using legacy search API");
+          
+          // Generate queries
+          const queries = [
+            `${profile.school} ${profile.major} ${goal.target_year} SWE internship ${goal.target_company}`,
+            `${profile.major} ${goal.target_year} internship ${goal.target_company} site:linkedin.com/in`,
+            `${profile.school} ${goal.target_year} software engineering intern`,
+          ];
+  
+          // Collect URLs from all queries
+          let urls: string[] = [];
+          for (const q of queries) {
+            const res = (await exaSearch(env, q, 10)) as any;
+            urls.push(...(res.results || []).map((r: any) => r.url));
+          }
+  
+          // Deduplicate URLs
+          urls = Array.from(new Set(urls));
+  
+          // Enqueue each URL to INGEST_QUEUE
+          await env.INGEST_QUEUE.sendBatch(urls.map((url) => ({ body: url })));
+  
+          return new Response(JSON.stringify({ 
+            enqueued: urls.length,
+            message: "Used legacy search API - consider creating a Webset" 
+          }), {
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        
+        // Using Websets API
+        console.log(`Using Webset ${activeWebsetId} for search`);
+        
+        // Generate queries for Websets
         const queries = [
-          `${profile.school} ${profile.major} ${goal.target_year} SWE internship ${goal.target_company}`,
-          `${profile.major} ${goal.target_year} internship ${goal.target_company} site:linkedin.com/in`,
+          `${profile.school} ${profile.major} ${goal.target_year} software engineer ${goal.target_company}`,
+          `${profile.major} ${goal.target_year} internship ${goal.target_company} linkedin profile`,
           `${profile.school} ${goal.target_year} software engineering intern`,
         ];
-
-        // Collect URLs from all queries
+        
+        // Collect URLs using Websets
         let urls: string[] = [];
         for (const q of queries) {
-          const res = (await exaSearch(env, q, 10)) as any;
-          urls.push(...(res.results || []).map((r: any) => r.url));
+          try {
+            const res = await exaWebsetsSearch(env, q, activeWebsetId, 10);
+            const newUrls = ((res as any).results || [])
+              .map((r: any) => r.url)
+              .filter((url: string) => url && url.includes("linkedin.com/in"));
+            
+            urls.push(...newUrls);
+            console.log(`Found ${newUrls.length} LinkedIn profiles for query "${q}"`);
+          } catch (error: any) {
+            console.error(`Error searching Webset for query "${q}": ${error?.message || String(error)}`);
+          }
         }
-
+        
         // Deduplicate URLs
         urls = Array.from(new Set(urls));
-
+        
+        if (urls.length === 0) {
+          return new Response(JSON.stringify({ 
+            error: "No LinkedIn profiles found in Webset",
+            websetId: activeWebsetId
+          }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        
         // Enqueue each URL to INGEST_QUEUE
         await env.INGEST_QUEUE.sendBatch(urls.map((url) => ({ body: url })));
-
-        return new Response(JSON.stringify({ enqueued: urls.length }), {
+        
+        // Also add these URLs to the Webset if needed
+        try {
+          await addUrlsToWebset(env, activeWebsetId, urls);
+          console.log(`Added ${urls.length} URLs to Webset ${activeWebsetId}`);
+        } catch (error: any) {
+          console.error(`Error adding URLs to Webset: ${error?.message || String(error)}`);
+        }
+        
+        return new Response(JSON.stringify({ 
+          enqueued: urls.length,
+          websetId: activeWebsetId
+        }), {
           headers: { 'content-type': 'application/json' },
         });
       } catch (err) {
@@ -317,15 +413,61 @@ export default {
     // GET /debug/exa?q=query
     if (req.method === 'GET' && url.pathname === '/debug/exa') {
       const query = url.searchParams.get('q');
+      const websetId = url.searchParams.get('webset') || env.WEBSET_ID;
+      
       if (!query) {
         return new Response(JSON.stringify({ error: 'Missing q parameter' }), {
           status: 400,
           headers: { 'content-type': 'application/json' },
         });
       }
+      
       try {
-        const results = await exaSearch(env, query);
-        return new Response(JSON.stringify(results), {
+        // Use Websets API if webset ID is provided, otherwise fallback to legacy search
+        let results;
+        if (websetId) {
+          console.log(`Using Webset ${websetId} for query "${query}"`);
+          results = await exaWebsetsSearch(env, query, websetId);
+        } else {
+          console.log(`Using legacy search API for query "${query}"`);
+          results = await exaSearch(env, query);
+        }
+        
+        return new Response(JSON.stringify({
+          results,
+          usedWebset: websetId ? true : false,
+          websetId
+        }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+    }
+    
+    // GET /debug/websets - List available websets
+    if (req.method === 'GET' && url.pathname === '/debug/websets') {
+      try {
+        const response = await fetch('https://api.exa.ai/websets', {
+          method: 'GET',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': env.EXA_KEY,
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Failed to get websets: ${response.statusText}`);
+        }
+        
+        const websets = await response.json();
+        return new Response(JSON.stringify({
+          websets,
+          currentWebset: env.WEBSET_ID || null
+        }), {
           headers: { 'content-type': 'application/json' },
         });
       } catch (err) {
