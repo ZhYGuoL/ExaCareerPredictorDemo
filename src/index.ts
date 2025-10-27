@@ -1,733 +1,1018 @@
 import type { Env } from './types';
-import { exaSearch, exaWebsetsSearch, createProfilesWebset, addUrlsToWebset } from './lib/exa';
+import { 
+  exaContents, 
+  createUserWebset, 
+  findUserWebset, 
+  updateUserWebset, 
+  searchUserWebset,
+  UserProfile,
+  generateUserIdentifier 
+} from './lib/exa';
+import { ReRanker } from './reranker';
 import { embedEvent } from './lib/embed';
-import ingestWorker from './ingest-worker';
 
+// Worker entrypoint
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    // Route handling
+    if (path === '/') return ui();
+    if (path === '/api/linkedin/submit') return handleLinkedinSubmission(request, env);
+    if (path === '/api/webset/search') return handleWebsetSearch(request, env);
+    if (path === '/api/career-goal/add') return handleCareerGoal(request, env);
+    if (path.startsWith('/api/debug/')) return handleDebug(path, request, env);
+
+    return new Response('Not found', { status: 404 });
+  },
+
+  // Queue handler for background tasks
+  async queue(batch: MessageBatch<string>, env: Env): Promise<void> {
+    for (const message of batch.messages) {
+      try {
+        // Parse message data
+        const data = JSON.parse(message.body);
+        
+        if (data.type === 'extract_linkedin') {
+          await extractLinkedinProfile(data.url, env);
+        } else if (data.type === 'update_webset') {
+          await updateUserWebset(env, data.websetId, data.profile);
+        }
+      } catch (error) {
+        console.error('Queue processing error:', error);
+      }
+    }
+  }
+};
+
+/**
+ * Handle LinkedIn URL submission
+ * - Check if we already have a Webset for this user
+ * - If not, create a new one and extract profile data
+ */
+async function handleLinkedinSubmission(request: Request, env: Env): Promise<Response> {
+  try {
+    console.log("LinkedIn submission received");
+    
+    const data = await request.json();
+    console.log("Request data:", data);
+    
+    const linkedinUrl = data.linkedinUrl as string;
+    const school = data.school as string;
+    const major = data.major as string;
+    const gradYear = data.gradYear as number;
+    
+    console.log(`Processing LinkedIn URL: ${linkedinUrl}, School: ${school}, Major: ${major}, Grad Year: ${gradYear}`);
+    
+    // Validate input
+    if (!linkedinUrl || !school || !major || !gradYear) {
+      console.log("Missing required fields in request");
+      return new Response(JSON.stringify({ 
+        error: 'Missing required fields' 
+      }), { 
+        status: 400, 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+
+    // Clean and normalize LinkedIn URL
+    const normalizedUrl = normalizeLinkedinUrl(linkedinUrl);
+    
+    // Generate a hash for this LinkedIn URL
+    const urlHash = await generateUrlHash(normalizedUrl);
+    
+    // Check if we already have a Webset for this user
+    const existingRecord = await env.DB.prepare(
+      'SELECT * FROM user_websets WHERE linkedin_hash = ?'
+    ).bind(urlHash).first();
+    
+    if (existingRecord) {
+      // Update last accessed timestamp
+      await env.DB.prepare(
+        'UPDATE user_websets SET last_accessed_at = ? WHERE id = ?'
+      ).bind(new Date().toISOString(), existingRecord.id).run();
+      
+      // Return existing Webset info
+      return new Response(JSON.stringify({
+        status: 'existing',
+        websetId: existingRecord.webset_id,
+        school: existingRecord.user_school,
+        major: existingRecord.user_major,
+        gradYear: existingRecord.user_grad_year
+      }), { 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    
+    // Create basic user profile with provided information
+    const userProfile: UserProfile = {
+      school,
+      major,
+      grad_year: parseInt(gradYear),
+      experiences: []
+    };
+    
+    // Create a new Webset for this user
+    console.log("Creating user Webset with profile:", JSON.stringify(userProfile));
+    
+    try {
+      const websetResult = await createUserWebset(env, userProfile);
+      console.log("Webset creation result:", websetResult);
+      
+      if (!websetResult || !websetResult.id) {
+        console.error("Webset result is missing ID:", websetResult);
+        return new Response(JSON.stringify({
+          error: 'Failed to create Webset'
+        }), { 
+          status: 500, 
+          headers: { 'Content-Type': 'application/json' } 
+        });
+      }
+      
+      // Store the Webset ID in our database
+      console.log("Storing Webset ID in database:", websetResult.id);
+      
+      try {
+        await env.DB.prepare(`
+          INSERT INTO user_websets 
+          (linkedin_url, linkedin_hash, webset_id, webset_external_id, user_school, user_major, user_grad_year, created_at) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          normalizedUrl,
+          urlHash,
+          websetResult.id,
+          websetResult.externalId || generateUserIdentifier(normalizedUrl, userProfile),
+          school,
+          major,
+          gradYear,
+          new Date().toISOString()
+        ).run();
+        
+        console.log("Database insert successful");
+        
+        // Queue the LinkedIn profile extraction as a background task
+        await env.INGEST_QUEUE.send(JSON.stringify({
+          type: 'extract_linkedin',
+          url: normalizedUrl
+        }));
+        
+        console.log("LinkedIn extraction queued");
+      } catch (dbError) {
+        console.error("Database error:", dbError);
+        // Continue despite database error - we can still return the webset ID to the client
+      }
+      
+      return new Response(JSON.stringify({
+        status: 'created',
+        websetId: websetResult.id,
+        message: 'Webset created successfully and profile extraction queued'
+      }), { 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+      
+    } catch (websetError) {
+      console.error("Error creating Webset:", websetError);
+      return new Response(JSON.stringify({
+        error: 'Failed to create Webset: ' + (websetError instanceof Error ? websetError.message : String(websetError))
+      }), { 
+        status: 500, 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    
+  } catch (error) {
+    console.error('LinkedIn submission error:', error);
+    return new Response(JSON.stringify({ 
+      error: 'Failed to process LinkedIn profile'
+    }), { 
+      status: 500, 
+      headers: { 'Content-Type': 'application/json' } 
+    });
+  }
+}
+
+/**
+ * Extract information from a LinkedIn profile
+ * - Uses Exa contents API to get the profile HTML
+ * - Parses experiences, education, etc.
+ * - Updates the user's Webset with the new information
+ */
+async function extractLinkedinProfile(url: string, env: Env) {
+  try {
+    // Get the profile record from our database
+    const userRecord = await env.DB.prepare(
+      'SELECT * FROM user_websets WHERE linkedin_url = ?'
+    ).bind(url).first();
+    
+    if (!userRecord) {
+      throw new Error(`No user record found for URL: ${url}`);
+    }
+    
+    // Use Exa to extract the LinkedIn page content
+    const contentResponse = await exaContents(env, [url]);
+    
+    if (!contentResponse.results || contentResponse.results.length === 0) {
+      throw new Error('Failed to extract LinkedIn content');
+    }
+    
+    const content = contentResponse.results[0].content;
+    
+    // Extract profile information
+    const extractedProfile = parseLinkedinProfile(content);
+    
+    // Store the extracted profile in our database
+    await env.DB.prepare(`
+      INSERT INTO linkedin_profiles
+      (linkedin_url, full_name, headline, profile_data, extracted_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (linkedin_url) DO UPDATE SET
+      full_name = excluded.full_name,
+      headline = excluded.headline,
+      profile_data = excluded.profile_data,
+      extracted_at = excluded.extracted_at
+    `).bind(
+      url,
+      extractedProfile.name || '',
+      extractedProfile.headline || '',
+      JSON.stringify(extractedProfile),
+      new Date().toISOString()
+    ).run();
+    
+    // Update the user profile with the extracted information
+    const updatedProfile: UserProfile = {
+      school: userRecord.user_school,
+      major: userRecord.user_major,
+      grad_year: userRecord.user_grad_year,
+      experiences: extractedProfile.experiences || [],
+      research: extractedProfile.research || []
+    };
+    
+    // Update the Webset with this new information
+    await updateUserWebset(env, userRecord.webset_id, updatedProfile);
+    
+    console.log('Successfully extracted and processed LinkedIn profile:', url);
+  } catch (error) {
+    console.error('Error extracting LinkedIn profile:', error);
+  }
+}
+
+/**
+ * Handle searching within a user's Webset
+ */
+async function handleWebsetSearch(request: Request, env: Env): Promise<Response> {
+  try {
+    const data = await request.json();
+    const websetId = data.websetId as string;
+    const query = data.query as string;
+    const filters = data.filters as Record<string, any> | undefined;
+    
+    if (!websetId || !query) {
+      return new Response(JSON.stringify({ 
+        error: 'Missing required fields' 
+      }), { 
+        status: 400, 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    
+    // Get user record for this Webset
+    const userRecord = await env.DB.prepare(
+      'SELECT * FROM user_websets WHERE webset_id = ?'
+    ).bind(websetId).first();
+    
+    if (!userRecord) {
+      return new Response(JSON.stringify({ 
+        error: 'Invalid Webset ID' 
+      }), { 
+        status: 400, 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    
+    // Search the user's Webset
+    const results = await searchUserWebset(env, websetId, query, filters || {});
+    
+    // Process and return the results
+    const typedResults = results as any;
+    return new Response(JSON.stringify({
+      results: typedResults.results.map((result: any) => ({
+        title: result.title,
+        url: result.url,
+        snippet: result.snippet,
+        content: result.content,
+        score: result.score
+      }))
+    }), { 
+      headers: { 'Content-Type': 'application/json' } 
+    });
+    
+  } catch (error) {
+    console.error('Webset search error:', error);
+    return new Response(JSON.stringify({ 
+      error: 'Failed to search Webset'
+    }), { 
+      status: 500, 
+      headers: { 'Content-Type': 'application/json' } 
+    });
+  }
+}
+
+/**
+ * Handle adding a new career goal for a user
+ */
+async function handleCareerGoal(request: Request, env: Env): Promise<Response> {
+  try {
+    const data = await request.json();
+    const linkedinUrl = data.linkedinUrl as string;
+    const role = data.role as string;
+    const company = data.company as string | undefined;
+    const industry = data.industry as string | undefined;
+    const timeframe = data.timeframe as string | undefined;
+    
+    if (!linkedinUrl || !role) {
+      return new Response(JSON.stringify({ 
+        error: 'Missing required fields' 
+      }), { 
+        status: 400, 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    
+    // Normalize the LinkedIn URL
+    const normalizedUrl = normalizeLinkedinUrl(linkedinUrl);
+    
+    // Get the user record
+    const userRecord = await env.DB.prepare(
+      'SELECT * FROM user_websets WHERE linkedin_url = ?'
+    ).bind(normalizedUrl).first();
+    
+    if (!userRecord) {
+      return new Response(JSON.stringify({ 
+        error: 'User not found' 
+      }), { 
+        status: 404, 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    
+    // Save the career goal
+    await env.DB.prepare(`
+      INSERT INTO user_career_goals
+      (linkedin_url, target_role, target_company, target_industry, timeframe, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+      normalizedUrl,
+      role,
+      company || null,
+      industry || null,
+      timeframe || null,
+      new Date().toISOString()
+    ).run();
+    
+    // Update the user's Webset with the new target company
+    if (company) {
+      await env.INGEST_QUEUE.send(JSON.stringify({
+        type: 'update_webset',
+        websetId: userRecord.webset_id,
+        profile: {
+          target_companies: [company]
+        }
+      }));
+    }
+    
+    // Return success response
+    return new Response(JSON.stringify({
+      status: 'success',
+      message: 'Career goal added successfully'
+    }), { 
+      headers: { 'Content-Type': 'application/json' } 
+    });
+    
+  } catch (error) {
+    console.error('Career goal error:', error);
+    return new Response(JSON.stringify({ 
+      error: 'Failed to add career goal'
+    }), { 
+      status: 500, 
+      headers: { 'Content-Type': 'application/json' } 
+    });
+  }
+}
+
+/**
+ * Handle debug endpoints for development and testing
+ */
+async function handleDebug(path: string, request: Request, env: Env): Promise<Response> {
+  try {
+    const debugPath = path.replace('/api/debug/', '');
+    
+    if (debugPath === 'websets') {
+      // List all user Websets in our database
+      const websets = await env.DB.prepare(
+        'SELECT * FROM user_websets ORDER BY created_at DESC LIMIT 100'
+      ).all();
+      
+      return new Response(JSON.stringify(websets), { 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    
+    if (debugPath === 'goals') {
+      // List all career goals in our database
+      const goals = await env.DB.prepare(
+        'SELECT * FROM user_career_goals ORDER BY created_at DESC LIMIT 100'
+      ).all();
+      
+      return new Response(JSON.stringify(goals), { 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    
+    if (debugPath === 'profiles') {
+      // List all LinkedIn profiles in our database
+      const profiles = await env.DB.prepare(
+        'SELECT linkedin_url, full_name, headline, extracted_at FROM linkedin_profiles ORDER BY extracted_at DESC LIMIT 100'
+      ).all();
+      
+      return new Response(JSON.stringify(profiles), { 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    
+    return new Response(JSON.stringify({ error: 'Unknown debug endpoint' }), { 
+      status: 404, 
+      headers: { 'Content-Type': 'application/json' } 
+    });
+    
+  } catch (error) {
+    console.error('Debug endpoint error:', error);
+    return new Response(JSON.stringify({ error: 'Debug endpoint failed' }), { 
+      status: 500, 
+      headers: { 'Content-Type': 'application/json' } 
+    });
+  }
+}
+
+/**
+ * Generate the UI HTML
+ */
 function ui(): Response {
   const html = `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Career Path Matcher</title>
+  <title>Career Path Explorer</title>
   <style>
-    body{font-family: system-ui, sans-serif; margin: 24px; max-width: 900px}
-    input, textarea, select, button{width:100%; padding:8px; margin:6px 0}
-    table{width:100%; border-collapse: collapse; margin-top: 16px}
-    th, td{border:1px solid #ddd; padding:8px}
-    th{text-align:left; background:#f7f7f7}
-    .row{display:grid; grid-template-columns:1fr 1fr; gap:12px}
-    .muted{color:#666; font-size:12px}
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #f7f9fc;
+      color: #333;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    header {
+      background-color: #1e3a8a;
+      color: white;
+      padding: 20px 0;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 600;
+    }
+    h2 {
+      color: #1e3a8a;
+      margin-top: 30px;
+      font-size: 20px;
+    }
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    input, textarea, select, button {
+      width: 100%;
+      padding: 12px;
+      margin: 8px 0 16px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      box-sizing: border-box;
+      font-size: 16px;
+    }
+    button {
+      background-color: #1e3a8a;
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background-color 0.2s;
+    }
+    button:hover {
+      background-color: #1e40af;
+    }
+    .muted {
+      color: #666;
+      font-size: 14px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    .hidden {
+      display: none;
+    }
+    .result-card {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .result-card h3 {
+      margin-top: 0;
+      color: #1e3a8a;
+    }
+    .result-card p {
+      margin-bottom: 8px;
+    }
+    .result-card a {
+      color: #2563eb;
+      text-decoration: none;
+    }
+    .result-card a:hover {
+      text-decoration: underline;
+    }
+    .loading {
+      text-align: center;
+      padding: 20px;
+    }
+    .score {
+      font-weight: bold;
+      color: #1e3a8a;
+    }
+    .step-indicator {
+      display: flex;
+      margin-bottom: 24px;
+    }
+    .step {
+      flex: 1;
+      text-align: center;
+      padding: 12px;
+      background-color: #e5e7eb;
+      color: #6b7280;
+      position: relative;
+    }
+    .step.active {
+      background-color: #1e3a8a;
+      color: white;
+    }
+    .step.completed {
+      background-color: #10b981;
+      color: white;
+    }
   </style>
 </head>
 <body>
-  <h1>Career Path Matcher</h1>
-  <div class="row">
-    <div><label>School <input id="school" placeholder="MIT"></label></div>
-    <div><label>Major <input id="major" placeholder="CS"></label></div>
-  </div>
-  <div class="row">
-    <div><label>Grad Year <input id="grad" type="number" placeholder="2026"></label></div>
-    <div><label>Target Company <input id="company" placeholder="Google"></label></div>
-  </div>
-  <div class="row">
-    <div>
-      <label>Target Year
-        <select id="tyear">
-          <option>freshman</option><option>sophomore</option>
-          <option selected>junior</option><option>senior</option>
-        </select>
-      </label>
+  <header>
+    <div class="container">
+      <h1>Career Path Explorer</h1>
+      <p>Find and learn from career paths similar to yours</p>
     </div>
-    <div class="muted">Enter a few user events below (JSON). Example:<br/>
-      <code>[{"role":"Research Assistant","org":"ML Lab","acad_year":"freshman"},{"role":"Backend Intern","org":"Startup X","acad_year":"sophomore"}]</code>
-    </div>
-  </div>
-  <label>User Events (JSON)</label>
-  <textarea id="events" rows="6" placeholder='[{"role":"Software Engineer Intern","org":"Google","acad_year":"sophomore"}]'></textarea>
+  </header>
   
-  <h3 style="margin-top:20px">Filters & Options</h3>
-  <div class="row">
-    <div><label>Filter School <input id="f_school" placeholder="e.g., MIT"></label></div>
-    <div><label>Filter Degree <input id="f_degree" placeholder="e.g., CS"></label></div>
-  </div>
-  <div class="row">
-    <div>
-      <label>Company Tier
-        <select id="f_tier">
-          <option value="">Any</option>
-          <option value="faang">FAANG</option>
-          <option value="bigtech">Big Tech</option>
-          <option value="startup">Startup</option>
-        </select>
-      </label>
+  <div class="container">
+    <!-- Step indicator -->
+    <div class="step-indicator">
+      <div class="step active" id="step1">1. Add LinkedIn Profile</div>
+      <div class="step" id="step2">2. Define Career Goals</div>
+      <div class="step" id="step3">3. Explore Similar Paths</div>
     </div>
-    <div><label><input type="checkbox" id="showAlign"> Show event alignment (slower)</label></div>
+    
+    <!-- Step 1: LinkedIn input -->
+    <div class="card" id="linkedinCard">
+      <h2>Start with Your LinkedIn Profile</h2>
+      <form id="linkedinForm">
+        <div class="row">
+          <div>
+            <label for="linkedinUrl">Your LinkedIn URL:</label>
+            <input type="url" id="linkedinUrl" name="linkedinUrl" placeholder="https://www.linkedin.com/in/yourname/" required>
+          </div>
+        </div>
+        
+        <div class="row">
+          <div>
+            <label for="school">University/School:</label>
+            <input type="text" id="school" name="school" placeholder="Carnegie Mellon University" required>
+          </div>
+          <div>
+            <label for="major">Major/Field of Study:</label>
+            <input type="text" id="major" name="major" placeholder="Computer Science" required>
+          </div>
+        </div>
+        
+        <div class="row">
+          <div>
+            <label for="gradYear">Graduation Year:</label>
+            <input type="number" id="gradYear" name="gradYear" placeholder="2024" min="1950" max="2030" required>
+          </div>
+          <div></div>
+        </div>
+        
+        <button type="submit">Submit Profile</button>
+        <p class="muted">We'll analyze your LinkedIn profile to find similar career paths</p>
+      </form>
+      <div id="linkedinLoading" class="loading hidden">
+        <p>Processing your LinkedIn profile...</p>
+      </div>
+    </div>
+    
+    <!-- Step 2: Career Goals -->
+    <div class="card hidden" id="goalsCard">
+      <h2>Define Your Career Goals</h2>
+      <form id="goalsForm">
+        <div class="row">
+          <div>
+            <label for="targetRole">Target Role:</label>
+            <input type="text" id="targetRole" name="targetRole" placeholder="Senior Software Engineer" required>
+          </div>
+          <div>
+            <label for="targetCompany">Target Company (optional):</label>
+            <input type="text" id="targetCompany" name="targetCompany" placeholder="Google, Amazon, etc.">
+          </div>
+        </div>
+        
+        <div class="row">
+          <div>
+            <label for="targetIndustry">Target Industry (optional):</label>
+            <input type="text" id="targetIndustry" name="targetIndustry" placeholder="Finance, Healthcare, etc.">
+          </div>
+          <div>
+            <label for="timeframe">Timeframe (optional):</label>
+            <select id="timeframe" name="timeframe">
+              <option value="">Select timeframe</option>
+              <option value="1 year">1 year</option>
+              <option value="2 years">2 years</option>
+              <option value="3-5 years">3-5 years</option>
+              <option value="5+ years">5+ years</option>
+            </select>
+          </div>
+        </div>
+        
+        <button type="submit">Set Career Goals</button>
+        <p class="muted">We'll use this information to find the most relevant career paths</p>
+      </form>
+    </div>
+    
+    <!-- Step 3: Results -->
+    <div class="card hidden" id="resultsCard">
+      <h2>Similar Career Paths</h2>
+      <div id="searchForm">
+        <div class="row">
+          <div>
+            <label for="searchQuery">Refine your search:</label>
+            <input type="text" id="searchQuery" placeholder="E.g., 'Software engineers who worked at startups'">
+          </div>
+          <div style="display: flex; align-items: flex-end;">
+            <button id="searchButton" style="margin-top: 8px;">Search</button>
+          </div>
+        </div>
+      </div>
+      
+      <div id="resultsLoading" class="loading hidden">
+        <p>Finding similar career paths...</p>
+      </div>
+      
+      <div id="resultsContainer">
+        <p>Submit your career goals to see results</p>
+      </div>
+    </div>
   </div>
-  <div class="row">
-    <div><label>Page <input id="page" type="number" value="1" min="1"></label></div>
-    <div><label>Page Size <input id="pageSize" type="number" value="10" min="1" max="50"></label></div>
-  </div>
-  
-  <button id="go">Search</button>
-  <div id="out"></div>
+
   <script>
-  async function go(){
-    // Get form values with defaults and timestamps to ensure requests aren't duplicated
-    const timestamp = new Date().getTime();
+    // Enable console logging for debugging
+    console.log("Career Path Explorer loading...");
     
-    // Check for required fields and show alert if missing
-    if (!school.value.trim()) {
-      alert("Please enter a school name - this is required for proper ranking.");
-      return;
-    }
+    // State variables
+    let currentWebsetId = null;
+    let currentLinkedinUrl = null;
     
-    if (!company.value.trim()) {
-      alert("Please enter a target company name.");
-      return;
-    }
+    // DOM elements
+    const linkedinForm = document.getElementById('linkedinForm');
+    const linkedinCard = document.getElementById('linkedinCard');
+    const linkedinLoading = document.getElementById('linkedinLoading');
     
-    const profile = { 
-      school: school.value.trim(), 
-      major: major.value.trim() || 'Computer Science', 
-      grad_year: Number(grad.value||0),
-      _ts: timestamp // Add timestamp to force cache miss
-    };
-    const goal = { 
-      target_company: company.value.trim() || 'Google', 
-      target_year: tyear.value || 'junior',
-      _ts: timestamp
-    };
+    const goalsForm = document.getElementById('goalsForm');
+    const goalsCard = document.getElementById('goalsCard');
     
-    let userEvents = [];
-    try { 
-      userEvents = JSON.parse(events.value || "[]"); 
-    } catch(e){ 
-      alert("Invalid JSON for events"); 
-      return; 
-    }
+    const resultsCard = document.getElementById('resultsCard');
+    const resultsContainer = document.getElementById('resultsContainer');
+    const resultsLoading = document.getElementById('resultsLoading');
     
-    const filters = {
-      school: document.getElementById('f_school').value || null,
-      degree: document.getElementById('f_degree').value || null,
-      company_tier: document.getElementById('f_tier').value || null,
-      _ts: timestamp
-    };
+    const searchQuery = document.getElementById('searchQuery');
+    const searchButton = document.getElementById('searchButton');
     
-    const includeAlign = showAlign.checked;
-    const pageNum = Number(document.getElementById('page').value || 1);
-    const pageSizeNum = Number(document.getElementById('pageSize').value || 10);
+    const step1 = document.getElementById('step1');
+    const step2 = document.getElementById('step2');
+    const step3 = document.getElementById('step3');
     
-    out.innerHTML = '<p>Loading...</p>';
-    
-    // Add cache busting query parameter
-    const searchParams = new URLSearchParams({cacheBust: timestamp.toString()});
-    
-    try {
-      const res = await fetch('/rank/final?' + searchParams.toString(), {
-        method:'POST', 
-        headers:{'content-type':'application/json'},
-        body: JSON.stringify({ 
-          profile, 
-          goal, 
-          userEvents, 
-          topK: 100, 
-          topN: pageNum * pageSizeNum, 
-          gamma: 0.1, 
-          includeAlign,
-          filters,
-          page: pageNum,
-          pageSize: pageSizeNum,
-          _ts: timestamp // Add timestamp to request body too
-        })
-      });
-      const data = await res.json();
+    // Handle LinkedIn form submission
+    linkedinForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      console.log("LinkedIn form submitted");
       
-      // No raw response debugging needed
+      // Show loading indicator
+      linkedinForm.classList.add('hidden');
+      linkedinLoading.classList.remove('hidden');
       
-      if (data.error) {
-        out.innerHTML = '<p style="color:red">Error: ' + data.error + '</p>';
+      // Get form data
+      const linkedinUrl = (document.getElementById('linkedinUrl') as HTMLInputElement).value;
+      const school = (document.getElementById('school') as HTMLInputElement).value;
+      const major = (document.getElementById('major') as HTMLInputElement).value;
+      const gradYear = (document.getElementById('gradYear') as HTMLInputElement).value;
+      
+      console.log("Form data:", { linkedinUrl, school, major, gradYear });
+      
+      try {
+        console.log("Submitting to API...");
+        // Submit to API
+        const response = await fetch('/api/linkedin/submit', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ linkedinUrl, school, major, gradYear })
+        });
+        
+        console.log("API response status:", response.status);
+        const data = await response.json();
+        console.log("API response data:", data);
+        
+        if (response.ok) {
+          console.log("LinkedIn submission successful");
+          // Save webset ID for later use
+          currentWebsetId = data.websetId;
+          currentLinkedinUrl = linkedinUrl;
+          
+          // Update step indicators
+          step1.classList.remove('active');
+          step1.classList.add('completed');
+          step2.classList.add('active');
+          
+          // Move to next step
+          linkedinCard.classList.add('hidden');
+          goalsCard.classList.remove('hidden');
+          console.log("UI updated to show goals card");
+        } else {
+          console.error("LinkedIn submission error:", data.error);
+          alert('Error: ' + (data.error || 'Failed to process LinkedIn profile'));
+          // Reset form
+          linkedinForm.classList.remove('hidden');
+          linkedinLoading.classList.add('hidden');
+        }
+      } catch (error) {
+        alert('Error submitting form: ' + error.message);
+        // Reset form
+        linkedinForm.classList.remove('hidden');
+        linkedinLoading.classList.add('hidden');
+      }
+    });
+    
+    // Handle Career Goals form submission
+    goalsForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      // Get form data
+      const targetRole = (document.getElementById('targetRole') as HTMLInputElement).value;
+      const targetCompany = (document.getElementById('targetCompany') as HTMLInputElement).value;
+      const targetIndustry = (document.getElementById('targetIndustry') as HTMLInputElement).value;
+      const timeframe = (document.getElementById('timeframe') as HTMLSelectElement).value;
+      
+      try {
+        // Submit to API
+        const response = await fetch('/api/career-goal/add', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            linkedinUrl: currentLinkedinUrl,
+            role: targetRole,
+            company: targetCompany,
+            industry: targetIndustry,
+            timeframe
+          })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+          // Update step indicators
+          step2.classList.remove('active');
+          step2.classList.add('completed');
+          step3.classList.add('active');
+          
+          // Move to next step
+          goalsCard.classList.add('hidden');
+          resultsCard.classList.remove('hidden');
+          
+          // Trigger initial search
+          searchWebset(targetRole + " at " + (targetCompany || 'companies') + " in " + (targetIndustry || 'any industry'));
+        } else {
+          alert('Error: ' + (data.error || 'Failed to save career goals'));
+        }
+      } catch (error) {
+        alert('Error submitting career goals: ' + error.message);
+      }
+    });
+    
+    // Handle search button click
+    searchButton.addEventListener('click', () => {
+      searchWebset(searchQuery.value);
+    });
+    
+    // Function to search the Webset
+    async function searchWebset(query) {
+      if (!currentWebsetId) {
+        alert('No Webset ID available. Please complete the previous steps first.');
         return;
       }
-      let html = '';
-      if (data.results && data.results.length > 0) {
-        // Show pagination info
-        html += \`<div style="background:#f7f7f7; padding:12px; margin:12px 0; border-radius:4px">
-          <strong>Results:</strong> Showing page \${data.page || pageNum} of \${Math.ceil((data.total||0)/pageSizeNum)} 
-          (Total: \${data.total||0} candidates, Page size: \${data.pageSize || pageSizeNum})
-        </div>\`;
+      
+      // Show loading indicator
+      resultsContainer.innerHTML = '';
+      resultsLoading.classList.remove('hidden');
+      
+      try {
+        // Call search API
+        const response = await fetch('/api/webset/search', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            websetId: currentWebsetId,
+            query: query || 'similar career paths'
+          })
+        });
         
-        for (const r of data.results) {
-          html += \`<div style="border:1px solid #ddd; padding:12px; margin:12px 0; border-radius:4px">
-            <h3 style="margin:0 0 8px 0">Candidate \${r.candidate_id.slice(0,8)}... (Score: \${(r.score||0).toFixed(4)})</h3>
-            \${r.url ? '<a href="'+r.url+'" target="_blank">View profile</a>' : ''}
-            \`;
-            
-          // Show score breakdown if available
-          if (r.scoreBreakdown) {
-            const sb = r.scoreBreakdown;
-            html += \`<div style="font-size:12px; margin:8px 0; padding:8px; background:#f7f7f7; border-radius:4px">
-              <strong>Score Breakdown:</strong>
-              <ul style="margin:4px 0; padding-left:20px">
-                <li>University Match: \${(sb.universitySimilarity * 100).toFixed(1)}%</li>
-                <li>Career Path: \${(sb.careerSimilarity * 100).toFixed(1)}%</li>
-                <li>Target Company: \${(sb.companyProximity * 100).toFixed(1)}%</li>
-              </ul>
-            </div>\`
+        const data = await response.json();
+        
+        // Hide loading indicator
+        resultsLoading.classList.add('hidden');
+        
+        if (response.ok && data.results) {
+          // Display results
+          if (data.results.length === 0) {
+            resultsContainer.innerHTML = '<p>No results found. Try a different search query.</p>';
+          } else {
+            resultsContainer.innerHTML = '';
+            data.results.forEach(result => {
+              const resultCard = document.createElement('div');
+              resultCard.className = 'result-card';
+              
+              // Build HTML content for result card
+              resultCard.innerHTML = 
+                '<h3>' + (result.title || 'Career Profile') + '</h3>' +
+                '<p><a href="' + result.url + '" target="_blank">' + result.url + '</a></p>' +
+                '<p>' + (result.snippet || '') + '</p>' +
+                '<p class="score">Match Score: ' + Math.round((result.score as number) * 100) + '%</p>';
+              
+              resultsContainer.appendChild(resultCard);
+            });
           }
-          if (includeAlign && r.align && r.candidateEvents) {
-            html += '<h4 style="margin:12px 0 4px 0">Event Alignment:</h4>';
-            html += '<table style="width:auto; font-size:13px"><thead><tr><th>Your Event</th><th>→</th><th>Their Event</th><th>Similarity</th></tr></thead><tbody>';
-            for (const a of r.align) {
-              const ue = userEvents[a.x];
-              const ce = r.candidateEvents[a.y];
-              const sim = (1 - a.dx).toFixed(3);
-              html += \`<tr>
-                <td>\${ue.acad_year||'?'}: \${ue.role||'?'} @ \${ue.org||'?'}</td>
-                <td>→</td>
-                <td>\${ce.acad_year||'?'}: \${ce.role||'?'} @ \${ce.org||'?'}</td>
-                <td>\${sim}</td>
-              </tr>\`;
-            }
-            html += '</tbody></table>';
-          }
-          html += '</div>';
+        } else {
+          resultsContainer.innerHTML = '<p>Error loading results. Please try again.</p>';
         }
-        out.innerHTML = html;
-      } else {
-        out.innerHTML = '<p>No results found. Try different criteria or ingest more data first.</p>';
+      } catch (error) {
+        resultsLoading.classList.add('hidden');
+        resultsContainer.innerHTML = '<p>Error searching: ' + error.message + '</p>';
       }
-    } catch (err) {
-      out.innerHTML = '<p style="color:red">Error: ' + err.message + '</p>';
     }
-  }
-  document.getElementById('go').addEventListener('click', go);
   </script>
 </body>
 </html>`;
+
   return new Response(html, {
-    headers: { 'content-type': 'text/html; charset=utf-8' },
+    headers: {
+      'Content-Type': 'text/html;charset=UTF-8',
+    },
   });
 }
 
-export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
-    const url = new URL(req.url);
-
-    // GET / - UI
-    if (req.method === 'GET' && url.pathname === '/') {
-      return ui();
-    }
-
-    // GET /health
-    if (req.method === 'GET' && url.pathname === '/health') {
-      return new Response(JSON.stringify({ ok: true }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-
-    // GET /metrics - Proxy to ReRanker DO metrics
-    if (req.method === 'GET' && url.pathname === '/metrics') {
-      try {
-        const id = env.RERANKER.idFromName('global-reranker');
-        const stub = env.RERANKER.get(id);
-        const res = await stub.fetch('http://do/metrics');
-        return new Response(await res.text(), {
-          headers: { 'content-type': 'application/json' },
-        });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-    }
-
-    // POST /webset/create
-    if (req.method === 'POST' && url.pathname === '/webset/create') {
-      try {
-        const { name, description } = (await req.json()) as {
-          name: string;
-          description: string;
-        };
-        
-        // Create a new Webset
-        const webset = await createProfilesWebset(env, name, description);
-        const websetId = (webset as any).id;
-        console.log(`Created new Webset: ${websetId} - ${name}`);
-        
-        return new Response(JSON.stringify({ 
-          websetId: websetId,
-          message: `Created new Webset: ${name}` 
-        }), {
-          headers: { 'content-type': 'application/json' },
-        });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-    }
-
-    // POST /ingest/start
-    if (req.method === 'POST' && url.pathname === '/ingest/start') {
-      try {
-        const { profile, goal, websetId } = (await req.json()) as {
-          profile: { school: string; major: string };
-          goal: { target_company: string; target_year: string };
-          websetId?: string; // Optional: Use specific Webset ID
-        };
-        
-        // Use provided Webset ID or environment variable
-        const activeWebsetId = websetId || env.WEBSET_ID;
-        
-        if (!activeWebsetId) {
-          // If no Webset ID is available, fall back to legacy search
-          console.log("No Webset ID provided - using legacy search API");
-          
-          // Generate queries
-          const queries = [
-            `${profile.school} ${profile.major} ${goal.target_year} SWE internship ${goal.target_company}`,
-            `${profile.major} ${goal.target_year} internship ${goal.target_company} site:linkedin.com/in`,
-            `${profile.school} ${goal.target_year} software engineering intern`,
-          ];
+/**
+ * Parse LinkedIn profile content from HTML
+ * This is a simple example - in a real app, you'd want more robust parsing
+ */
+function parseLinkedinProfile(content: string): {
+  name?: string;
+  headline?: string;
+  experiences?: Array<{role?: string; org?: string;}>;
+  education?: Array<{school?: string; degree?: string;}>;
+  research?: string[];
+} {
+  // Extract basic profile information using regex
+  // Note: This is a simplified example - real parsing would be more robust
+  const nameMatch = content.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+  const headlineMatch = content.match(/<div[^>]*headline[^>]*>([^<]+)<\/div>/i);
   
-          // Collect URLs from all queries
-          let urls: string[] = [];
-          for (const q of queries) {
-            const res = (await exaSearch(env, q, 10)) as any;
-            urls.push(...(res.results || []).map((r: any) => r.url));
-          }
+  // Extract experiences
+  const experiences = [];
+  const expMatches = content.matchAll(/position[^>]*>([^<]+)<[\s\S]*?company[^>]*>([^<]+)</ig);
   
-          // Deduplicate URLs
-          urls = Array.from(new Set(urls));
-  
-          // Enqueue each URL to INGEST_QUEUE
-          await env.INGEST_QUEUE.sendBatch(urls.map((url) => ({ body: url })));
-  
-          return new Response(JSON.stringify({ 
-            enqueued: urls.length,
-            message: "Used legacy search API - consider creating a Webset" 
-          }), {
-            headers: { 'content-type': 'application/json' },
-          });
-        }
-        
-        // Using Websets API
-        console.log(`Using Webset ${activeWebsetId} for search`);
-        
-        // Generate queries for Websets
-        const queries = [
-          `${profile.school} ${profile.major} ${goal.target_year} software engineer ${goal.target_company}`,
-          `${profile.major} ${goal.target_year} internship ${goal.target_company} linkedin profile`,
-          `${profile.school} ${goal.target_year} software engineering intern`,
-        ];
-        
-        // Collect URLs using Websets
-        let urls: string[] = [];
-        for (const q of queries) {
-          try {
-            const res = await exaWebsetsSearch(env, q, activeWebsetId, 10);
-            const newUrls = ((res as any).results || [])
-              .map((r: any) => r.url)
-              .filter((url: string) => url && url.includes("linkedin.com/in"));
-            
-            urls.push(...newUrls);
-            console.log(`Found ${newUrls.length} LinkedIn profiles for query "${q}"`);
-          } catch (error: any) {
-            console.error(`Error searching Webset for query "${q}": ${error?.message || String(error)}`);
-          }
-        }
-        
-        // Deduplicate URLs
-        urls = Array.from(new Set(urls));
-        
-        if (urls.length === 0) {
-          return new Response(JSON.stringify({ 
-            error: "No LinkedIn profiles found in Webset",
-            websetId: activeWebsetId
-          }), {
-            status: 404,
-            headers: { 'content-type': 'application/json' },
-          });
-        }
-        
-        // Enqueue each URL to INGEST_QUEUE
-        await env.INGEST_QUEUE.sendBatch(urls.map((url) => ({ body: url })));
-        
-        // Also add these URLs to the Webset if needed
-        try {
-          await addUrlsToWebset(env, activeWebsetId, urls);
-          console.log(`Added ${urls.length} URLs to Webset ${activeWebsetId}`);
-        } catch (error: any) {
-          console.error(`Error adding URLs to Webset: ${error?.message || String(error)}`);
-        }
-        
-        return new Response(JSON.stringify({ 
-          enqueued: urls.length,
-          websetId: activeWebsetId
-        }), {
-          headers: { 'content-type': 'application/json' },
-        });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
+  if (expMatches) {
+    for (const match of expMatches) {
+      if (match[1] && match[2]) {
+        experiences.push({
+          role: match[1].trim(),
+          org: match[2].trim()
         });
       }
     }
-
-    // GET /debug/r2?key=raw/hash.json
-    if (req.method === 'GET' && url.pathname === '/debug/r2') {
-      const key = url.searchParams.get('key');
-      if (!key) {
-        return new Response(
-          JSON.stringify({ error: 'Missing key parameter' }),
-          {
-            status: 400,
-            headers: { 'content-type': 'application/json' },
-          },
-        );
-      }
-      try {
-        const obj = await env.BLOB.get(key);
-        if (!obj) {
-          return new Response(JSON.stringify({ error: 'Object not found' }), {
-            status: 404,
-            headers: { 'content-type': 'application/json' },
-          });
-        }
-        const text = await obj.text();
-        return new Response(text, {
-          headers: { 'content-type': 'application/json' },
-        });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
+  }
+  
+  // Extract education
+  const education = [];
+  const eduMatches = content.matchAll(/school[^>]*>([^<]+)<[\s\S]*?degree[^>]*>([^<]+)</ig);
+  
+  if (eduMatches) {
+    for (const match of eduMatches) {
+      if (match[1] && match[2]) {
+        education.push({
+          school: match[1].trim(),
+          degree: match[2].trim()
         });
       }
     }
-
-    // GET /debug/exa?q=query
-    if (req.method === 'GET' && url.pathname === '/debug/exa') {
-      const query = url.searchParams.get('q');
-      const websetId = url.searchParams.get('webset') || env.WEBSET_ID;
-      
-      if (!query) {
-        return new Response(JSON.stringify({ error: 'Missing q parameter' }), {
-          status: 400,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      
-      try {
-        // Use Websets API if webset ID is provided, otherwise fallback to legacy search
-        let results;
-        if (websetId) {
-          console.log(`Using Webset ${websetId} for query "${query}"`);
-          results = await exaWebsetsSearch(env, query, websetId);
-        } else {
-          console.log(`Using legacy search API for query "${query}"`);
-          results = await exaSearch(env, query);
-        }
-        
-        return new Response(JSON.stringify({
-          results,
-          usedWebset: websetId ? true : false,
-          websetId
-        }), {
-          headers: { 'content-type': 'application/json' },
-        });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-    }
+  }
+  
+  // Look for research keywords
+  const research = [];
+  const researchKeywords = ['research', 'thesis', 'laboratory', 'lab', 'study', 'investigation'];
+  
+  for (const keyword of researchKeywords) {
+    const regex = new RegExp(`(?:experience|education|section)[^>]*>[\\s\\S]{0,100}${keyword}[\\s\\S]{0,100}?<`, 'ig');
+    const matches = content.match(regex);
     
-    // GET /debug/websets - List available websets
-    if (req.method === 'GET' && url.pathname === '/debug/websets') {
-      try {
-        const response = await fetch('https://api.exa.ai/websets', {
-          method: 'GET',
-          headers: {
-            'content-type': 'application/json',
-            'x-api-key': env.EXA_KEY,
-          }
-        });
-        
-        if (!response.ok) {
-          throw new Error(`Failed to get websets: ${response.statusText}`);
-        }
-        
-        const websets = await response.json();
-        return new Response(JSON.stringify({
-          websets,
-          currentWebset: env.WEBSET_ID || null
-        }), {
-          headers: { 'content-type': 'application/json' },
-        });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
+    if (matches && matches.length > 0) {
+      research.push(keyword);
     }
+  }
+  
+  return {
+    name: nameMatch ? nameMatch[1].trim() : '',
+    headline: headlineMatch ? headlineMatch[1].trim() : '',
+    experiences,
+    education,
+    research: Array.from(new Set(research)) // Remove duplicates
+  };
+}
 
-    // GET /debug/candidate?cid=<candidate_id>
-    if (req.method === 'GET' && url.pathname === '/debug/candidate') {
-      const cid = url.searchParams.get('cid');
-      if (!cid) {
-        return new Response(
-          JSON.stringify({ error: 'Missing cid parameter' }),
-          {
-            status: 400,
-            headers: { 'content-type': 'application/json' },
-          },
-        );
-      }
-      try {
-        const rs = await env.DB.prepare(
-          'SELECT role, org, acad_year, ord FROM events WHERE candidate_id = ?1 ORDER BY ord ASC',
-        )
-          .bind(cid)
-          .all();
-        return new Response(JSON.stringify(rs.results || []), {
-          headers: { 'content-type': 'application/json' },
-        });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-    }
+/**
+ * Normalize a LinkedIn URL to a standard format
+ */
+function normalizeLinkedinUrl(url: string): string {
+  // Handle variations of LinkedIn URLs
+  let normalized = url.trim();
+  
+  // Ensure https://
+  if (!normalized.startsWith('http')) {
+    normalized = 'https://' + normalized;
+  }
+  
+  // Remove tracking parameters
+  normalized = normalized.split('?')[0];
+  
+  // Remove trailing slash
+  normalized = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+  
+  return normalized;
+}
 
-    // POST /rerank
-    if (req.method === 'POST' && url.pathname === '/rerank') {
-      try {
-        const id = env.RERANKER.idFromName('global-reranker');
-        const stub = env.RERANKER.get(id);
-        return await stub.fetch(req);
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-    }
+/**
+ * Generate a hash for a URL to use as a unique identifier
+ */
+async function generateUrlHash(url: string): Promise<string> {
+  // Convert string to arraybuffer
+  const encoder = new TextEncoder();
+  const data = encoder.encode(url);
+  
+  // Generate SHA-256 hash
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  
+  // Convert to hex string
+  return Array.from(new Uint8Array(hashBuffer))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
 
-    // POST /rank/final - End-to-end ranking pipeline
-    if (req.method === 'POST' && url.pathname.startsWith('/rank/final')) {
-      try {
-        // Log cache busting param to ensure we're getting it
-        const cacheBust = url.searchParams.get('cacheBust');
-        if (cacheBust) {
-          console.log(`Cache bust: ${cacheBust}`);
-        }
-        const body = (await req.json()) as {
-          profile: { school: string; major: string; grad_year: number };
-          goal: { target_company: string; target_year: string };
-          userEvents: Array<{
-            role?: string;
-            org?: string;
-            acad_year?: string;
-          }>;
-          topK?: number;
-          topN?: number;
-          gamma?: number;
-          includeAlign?: boolean;
-          filters?: {
-            school?: string | null;
-            degree?: string | null;
-            company_tier?: string | null;
-          };
-          page?: number;
-          pageSize?: number;
-        };
-
-        const {
-          goal,
-          userEvents,
-          topK = 80,
-          topN = 10,
-          gamma = 0.1,
-          includeAlign = false,
-          filters,
-          page = 1,
-          pageSize = 10,
-        } = body;
-
-        // 1) Embed userEvents
-        const X: number[][] = [];
-        for (const e of userEvents) {
-          const text =
-            `${e.acad_year || ''} | ${e.role || ''} | ${e.org || ''}`.trim();
-          X.push(await embedEvent(env, text));
-        }
-
-        // 2) Build goal text & embed it for shortlist query
-        // Include school and major to ensure embedding captures these criteria
-        // Using stronger weighting for school by repeating it multiple times
-        const schoolInfo = body.profile?.school 
-          ? `${body.profile.school} ${body.profile.school} ${body.profile.school} ` 
-          : '';
-        const majorInfo = body.profile?.major ? `${body.profile.major} ` : '';
-        const goalText = `${schoolInfo}${majorInfo}${goal.target_year} ${goal.target_company} software engineering`;
-        
-        // Log the search criteria for debugging
-        console.log(`Search criteria - School: ${body.profile?.school || 'none'}, Major: ${body.profile?.major || 'none'}, Target: ${goal.target_company}, Year: ${goal.target_year}`);
-        console.log(`Goal text: ${goalText}`);
-        const goalVec = await embedEvent(env, goalText);
-
-        // 3) Build filter object for Vectorize query
-        const filter: any = {};
-        if (filters?.school) filter.school = filters.school;
-        if (filters?.degree) filter.degree = filters.degree;
-        if (filters?.company_tier) filter.company_tier = filters.company_tier;
-
-        // 4) Shortlist from Vectorize with optional filters
-        if (!env.VDB) {
-          return new Response(
-            JSON.stringify({
-              error:
-                'Vectorize (VDB) not available. Please deploy to production or ensure VDB binding is configured.',
-            }),
-            {
-              status: 503,
-              headers: { 'content-type': 'application/json' },
-            },
-          );
-        }
-        
-        const shortlist = await env.VDB.query(goalVec, {
-          topK,
-          filter: Object.keys(filter).length > 0 ? filter : undefined,
-        });
-
-        // Normalize to unique candidate IDs
-        // Extract candidate_id from metadata or from vector ID (format: candidateId:ord)
-        const allCandidates = (shortlist.matches || [])
-          .map((m: any) => {
-            return m.metadata?.candidate_id || m.id?.split(':')[0];
-          })
-          .filter(Boolean);
-
-        const candidateIds = Array.from(new Set(allCandidates)).slice(0, topK);
-
-        // If no candidates found, return empty results
-        if (candidateIds.length === 0) {
-          return new Response(JSON.stringify({ results: [] }), {
-            headers: { 'content-type': 'application/json' },
-          });
-        }
-
-        // 4) Call Durable Object for re-rank
-        const id = env.RERANKER.idFromName('global-reranker');
-        const stub = env.RERANKER.get(id);
-        const rerankRes = (await stub
-          .fetch('http://do/rerank', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              userEvents,
-              candidateIds,
-              gamma,
-              goal,
-              profile: body.profile, // Pass profile info including school for university similarity
-              includeAlign,
-            }),
-          })
-          .then((r) => r.json())) as {
-          results: Array<{
-            id: string;
-            score: number;
-            align?: Array<{ x: number; y: number; dx: number }>;
-            debugInfo?: {
-              careerSimilarity: number;
-              universitySimilarity: number;
-              companyProximity: number;
-            };
-          }>;
-          cached?: boolean;
-        };
-
-        const sorted = rerankRes.results;
-        const total = sorted.length;
-
-        // 5) Apply pagination to re-ranked results
-        const start = Math.max(0, (page - 1) * pageSize);
-        const end = start + pageSize;
-        const paged = sorted.slice(start, end);
-
-        // 6) Hydrate URLs from D1 and optionally fetch candidate events
-        const out = [];
-        for (const r of paged) {
-          const row = await env.DB.prepare(
-            'SELECT url FROM candidates WHERE id = ?1',
-          )
-            .bind(r.id)
-            .first<{ url: string }>();
-
-          // Fetch candidate events if alignment is included
-          let candidateEvents: Array<{
-            role: string;
-            org: string;
-            acad_year: string;
-            ord: number;
-          }> = [];
-
-          if (includeAlign && r.align) {
-            const eventsRes = await env.DB.prepare(
-              'SELECT role, org, acad_year, ord FROM events WHERE candidate_id = ?1 ORDER BY ord ASC',
-            )
-              .bind(r.id)
-              .all();
-            candidateEvents = eventsRes.results as any;
-          }
-
-          out.push({
-            candidate_id: r.id,
-            score: r.score,
-            url: row?.url || null,
-            align: r.align,
-            candidateEvents: includeAlign ? candidateEvents : undefined,
-            scoreBreakdown: r.debugInfo,
-          });
-        }
-
-        return new Response(
-          JSON.stringify({
-            results: out,
-            total,
-            page,
-            pageSize,
-            cached: rerankRes.cached || false,
-          }),
-          {
-            headers: { 'content-type': 'application/json' },
-          },
-        );
-      } catch (err) {
-        return new Response(JSON.stringify({ error: String(err) }), {
-          status: 500,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-    }
-
-    return new Response('Not found', { status: 404 });
-  },
-
-  // Queue consumer handler
-  async queue(batch: MessageBatch<string>, env: Env) {
-    return ingestWorker.queue(batch, env);
-  },
-};
-
-// Export Durable Object
-export { ReRanker } from './reranker';
+// Export ReRanker for Durable Object migration
+export { ReRanker };

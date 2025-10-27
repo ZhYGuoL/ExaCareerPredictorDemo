@@ -8,44 +8,22 @@ compatibility_date = "2025-09-29"
 # For local development: Set EXA_KEY in .dev.vars file (not committed to git)
 # For production: Set as a secret via Cloudflare Dashboard or:
 #   wrangler secret put EXA_KEY
-#
-# Optional: Set WEBSET_ID for Exa Websets integration:
-#   wrangler secret put WEBSET_ID
-#
-# You can create a new Webset using the /webset/create endpoint:
-#   curl -X POST https://your-worker-url/webset/create \
-#     -H "Content-Type: application/json" \
-#     -d '{"name":"LinkedIn Profiles","description":"Candidate profiles for career matching"}'
 # ============================================================================
 
 # ============================================================================
 # BINDINGS CONFIGURATION
 # ============================================================================
-# The bindings below are defined in src/types.d.ts but commented out here
-# for local development. To enable them for deployment:
-#
-# 1. Create resources in Cloudflare Dashboard:
-#    - Vectorize index: career-events
-#    - D1 database: app
-#    - Queue: ingest
-#    - R2 bucket: raw-artifacts  
-#    - Durable Object: ReRanker
-#
-# 2. Uncomment the relevant sections below
-# 3. Replace placeholder IDs with actual resource IDs
-# 4. Deploy with: npm run deploy
+# These resources must be created in your Cloudflare account before deploying
 # ============================================================================
 
-[[vectorize]]
-binding = "VDB"
-index_name = "career-events"
-
+# D1 Database for storing user profiles and Webset mappings
 [[d1_databases]]
 binding = "DB"
 database_name = "app"
 database_id = "3230e3bc-d6ba-4f29-9ad9-7b929eeeae7a"
 preview_database_id = "f3c20ed4-c7a0-4d28-bc8a-4f24cf659979"
 
+# Queue for background processing of LinkedIn profiles
 [[queues.producers]]
 binding = "INGEST_QUEUE"
 queue = "ingest"
@@ -55,11 +33,17 @@ queue = "ingest"
 max_batch_size = 10
 max_batch_timeout = 30
 
+# R2 Bucket for storing raw profile data
 [[r2_buckets]]
 binding = "BLOB"
 bucket_name = "raw-artifacts"
 preview_bucket_name = "raw-artifacts-preview"
 
+# Optional: Workers AI for natural language processing
+[ai]
+binding = "AI"
+
+# Keep ReRanker class and binding for backward compatibility
 [[durable_objects.bindings]]
 name = "RERANKER"
 class_name = "ReRanker"
@@ -67,6 +51,3 @@ class_name = "ReRanker"
 [[migrations]]
 tag = "v1"
 new_classes = ["ReRanker"]
-
-[ai]
-binding = "AI"
