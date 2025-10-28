@@ -141,9 +141,10 @@ async function handleLinkedinSubmission(request: Request, env: Env): Promise<Res
     
     // Create a new Webset for this user
     console.log("Creating user Webset with profile:", JSON.stringify(userProfile));
+    console.log("LinkedIn URL:", normalizedUrl);
     
     try {
-      const websetResult = await createUserWebset(env, userProfile);
+      const websetResult = await createUserWebset(env, userProfile, normalizedUrl);
       console.log("Webset creation result:", websetResult);
       
       if (!websetResult || !websetResult.id) {

@@ -52,15 +52,39 @@ export function generateUserIdentifier(linkedinUrl: string, profile: UserProfile
 /**
  * Creates a personalized Webset for a user based on their LinkedIn profile
  */ 
-export async function createUserWebset(env: Env, userProfile: UserProfile): Promise<any> {
-  // Build search query based on user profile
-  const query = `I am looking for current or recently graduated ${userProfile.school} students who studied ${userProfile.major} and have relevant career experiences`;
+export async function createUserWebset(env: Env, userProfile: UserProfile, linkedinUrl?: string): Promise<any> {
+  let query: string;
+  let criteria: string[];
   
-  // Build criteria array based on user profile
-  const criteria: string[] = [
-    `Currently enrolled as a student at ${userProfile.school} OR graduated from ${userProfile.school} in ${userProfile.grad_year-1} or ${userProfile.grad_year}`,
-    `Studied ${userProfile.major} or a related field`
-  ];
+  // If LinkedIn URL is provided, process it with Workers AI to generate dynamic query/criteria
+  if (linkedinUrl && env.AI) {
+    console.log("Processing LinkedIn profile with Workers AI...");
+    try {
+      const { fetchLinkedinContent, processLinkedinProfile } = await import('./linkedin-processor');
+      const linkedinMarkdown = await fetchLinkedinContent(env, linkedinUrl);
+      const processed = await processLinkedinProfile(env, linkedinMarkdown, linkedinUrl);
+      query = processed.query;
+      criteria = processed.criteria;
+      console.log("✅ Generated query and criteria from LinkedIn profile using Workers AI");
+    } catch (aiError) {
+      console.warn("Workers AI processing failed, falling back to basic profile:", aiError);
+      // Fall back to basic generation
+      query = `I am looking for current or recently graduated ${userProfile.school} students who studied ${userProfile.major} and have relevant career experiences`;
+      criteria = [
+        `Currently enrolled as a student at ${userProfile.school} OR graduated from ${userProfile.school} in ${userProfile.grad_year-1} or ${userProfile.grad_year}`,
+        `Studied ${userProfile.major} or a related field`
+      ];
+    }
+  } else {
+    // Build search query based on user profile (fallback for when LinkedIn not processed)
+    query = `I am looking for current or recently graduated ${userProfile.school} students who studied ${userProfile.major} and have relevant career experiences`;
+    
+    // Build criteria array based on user profile
+    criteria = [
+      `Currently enrolled as a student at ${userProfile.school} OR graduated from ${userProfile.school} in ${userProfile.grad_year-1} or ${userProfile.grad_year}`,
+      `Studied ${userProfile.major} or a related field`
+    ];
+  }
 
   // Add research criteria if available
   if (userProfile.research && userProfile.research.length > 0) {
