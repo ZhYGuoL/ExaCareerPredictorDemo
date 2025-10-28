@@ -47,11 +47,11 @@ export function generateUserIdentifier(linkedinUrl: string, profile: UserProfile
   
   // Combine with user profile elements for a unique but recognizable identifier
   return `user-${profile.school.replace(/\s+/g, '-').toLowerCase()}-${profile.grad_year}-${Math.abs(hash).toString(16)}`;
-}
+} 
 
 /**
  * Creates a personalized Webset for a user based on their LinkedIn profile
- */
+ */ 
 export async function createUserWebset(env: Env, userProfile: UserProfile): Promise<any> {
   // Build search query based on user profile
   const query = `I am looking for current or recently graduated ${userProfile.school} students who studied ${userProfile.major} and have relevant career experiences`;
@@ -107,6 +107,13 @@ export async function createUserWebset(env: Env, userProfile: UserProfile): Prom
     // Build the Webset with query and criteria as the user requested
     const websetIdentifier = generateUserIdentifier(userProfile.school + userProfile.major, userProfile);
     
+    console.log("=".repeat(60));
+    console.log("CREATING WEBSET");
+    console.log("=".repeat(60));
+    console.log("User Profile:", userProfile);
+    console.log("Query:", query);
+    console.log("Criteria:", criteria);
+    
     // Start with minimal payload - just create an empty Webset
     // We'll add searches and enrichments through separate API calls
     const payload = {
@@ -114,8 +121,6 @@ export async function createUserWebset(env: Env, userProfile: UserProfile): Prom
     };
     
     console.log("Webset creation payload:", JSON.stringify(payload, null, 2));
-    console.log("Query to add:", query);
-    console.log("Criteria to add:", criteria);
     
     // Step 1: Create the empty Webset
     const r = await fetch(endpoint, {
@@ -202,17 +207,22 @@ export async function createUserWebset(env: Env, userProfile: UserProfile): Prom
         
         if (searchResponse.ok) {
           const searchResult = await searchResponse.json();
-          console.log("Search added successfully:", searchResult);
+          console.log("✅ Search added successfully to Webset");
+          console.log("Search details:", searchResult);
         } else {
           const errorText = await searchResponse.text();
-          console.warn("Could not add search to Webset (continuing anyway):", errorText);
+          console.warn("⚠️ Could not add search to Webset (continuing anyway):", errorText);
         }
       } catch (searchError) {
-        console.warn("Error adding search to Webset (continuing anyway):", searchError);
+        console.warn("⚠️ Error adding search to Webset (continuing anyway):", searchError);
         // Continue even if search addition fails
       }
       
+      console.log("=".repeat(60));
+      console.log("✅ WEBSET CREATION COMPLETE");
+      console.log("Webset ID:", result.id);
       console.log("Webset is ready for dynamic searching");
+      console.log("=".repeat(60));
       return result;
     } catch (parseError) {
       console.error("Failed to parse Webset creation response:", parseError);
