@@ -107,28 +107,15 @@ export async function createUserWebset(env: Env, userProfile: UserProfile): Prom
     // Build the Webset with query and criteria as the user requested
     const websetIdentifier = generateUserIdentifier(userProfile.school + userProfile.major, userProfile);
     
-    // The search object contains what we're looking for (query) and shared experiences (criteria)
-    // Note: Based on API errors, criteria must be objects with 'text' property
+    // Start with minimal payload - just create an empty Webset
+    // We'll add searches and enrichments through separate API calls
     const payload = {
-      externalId: websetIdentifier,
-      search: {
-        query: query, // "I am looking for current or recently graduated..."
-        criteria: criteria.map(c => ({ 
-          text: c,
-          description: c // Same text for both text and description
-        })), // Convert criteria strings to objects with text and description
-        count: 25 // Number of results to find
-      },
-      // Add optional enrichments if needed (format must be one of: text, date, number, options, email, phone, url)
-      enrichments: [
-        {
-          description: "Career progression timeline",
-          format: "text"
-        }
-      ]
+      externalId: websetIdentifier
     };
     
     console.log("Webset creation payload:", JSON.stringify(payload, null, 2));
+    console.log("Query to add:", query);
+    console.log("Criteria to add:", criteria);
     
     // Step 1: Create the empty Webset
     const r = await fetch(endpoint, {
@@ -183,10 +170,49 @@ export async function createUserWebset(env: Env, userProfile: UserProfile): Prom
         throw new Error("Webset created but returned in unexpected format");
       }
       
-      // The Webset is created and ready to use
-      // Users will query it dynamically using searchUserWebset function
-      console.log("Webset created and ready for dynamic searching");
+      // The Webset is created
+      // Now try to add a search to it using the searches endpoint
+      console.log("Webset created successfully, ID:", result.id);
+      console.log("Now adding initial search...");
       
+      try {
+        // Try to add the search using the searches endpoint
+        const searchEndpoint = `https://api.exa.ai/websets/v0/websets/${result.id}/searches`;
+        console.log(`Adding search to endpoint: ${searchEndpoint}`);
+        
+        const searchPayload = {
+          query: query,
+          count: 25,
+          // Add criteria if available
+          ...(criteria.length > 0 && {
+            criteria: criteria.map(c => ({ text: c }))
+          })
+        };
+        
+        console.log("Search payload:", JSON.stringify(searchPayload));
+        
+        const searchResponse = await fetch(searchEndpoint, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-api-key': env.EXA_KEY,
+          },
+          body: JSON.stringify(searchPayload),
+        });
+        
+        if (searchResponse.ok) {
+          const searchResult = await searchResponse.json();
+          console.log("Search added successfully:", searchResult);
+        } else {
+          const errorText = await searchResponse.text();
+          console.warn("Could not add search to Webset (continuing anyway):", errorText);
+        }
+      } catch (searchError) {
+        console.warn("Error adding search to Webset (continuing anyway):", searchError);
+        // Continue even if search addition fails
+      }
+      
+      console.log("Webset is ready for dynamic searching");
       return result;
     } catch (parseError) {
       console.error("Failed to parse Webset creation response:", parseError);

@@ -11,18 +11,44 @@ import {
 import { ReRanker } from './reranker';
 import { embedEvent } from './lib/embed';
 
+// Helper function to add CORS headers
+function addCorsHeaders(response: Response): Response {
+  const newResponse = new Response(response.body, response);
+  newResponse.headers.set('Access-Control-Allow-Origin', '*');
+  newResponse.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  newResponse.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  return newResponse;
+}
+
 // Worker entrypoint
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // Handle CORS preflight requests
+    if (request.method === 'OPTIONS') {
+      return addCorsHeaders(new Response(null, { status: 204 }));
+    }
+
     // Route handling
     if (path === '/') return ui();
-    if (path === '/api/linkedin/submit') return handleLinkedinSubmission(request, env);
-    if (path === '/api/webset/search') return handleWebsetSearch(request, env);
-    if (path === '/api/career-goal/add') return handleCareerGoal(request, env);
-    if (path.startsWith('/api/debug/')) return handleDebug(path, request, env);
+    if (path === '/api/linkedin/submit') {
+      const response = await handleLinkedinSubmission(request, env);
+      return addCorsHeaders(response);
+    }
+    if (path === '/api/webset/search') {
+      const response = await handleWebsetSearch(request, env);
+      return addCorsHeaders(response);
+    }
+    if (path === '/api/career-goal/add') {
+      const response = await handleCareerGoal(request, env);
+      return addCorsHeaders(response);
+    }
+    if (path.startsWith('/api/debug/')) {
+      const response = await handleDebug(path, request, env);
+      return addCorsHeaders(response);
+    }
 
     return new Response('Not found', { status: 404 });
   },
@@ -702,28 +728,40 @@ function ui(): Response {
     // Enable console logging for debugging
     console.log("Career Path Explorer loading...");
     
-    // State variables
-    let currentWebsetId = null;
-    let currentLinkedinUrl = null;
-    
-    // DOM elements
-    const linkedinForm = document.getElementById('linkedinForm');
-    const linkedinCard = document.getElementById('linkedinCard');
-    const linkedinLoading = document.getElementById('linkedinLoading');
-    
-    const goalsForm = document.getElementById('goalsForm');
-    const goalsCard = document.getElementById('goalsCard');
-    
-    const resultsCard = document.getElementById('resultsCard');
-    const resultsContainer = document.getElementById('resultsContainer');
-    const resultsLoading = document.getElementById('resultsLoading');
-    
-    const searchQuery = document.getElementById('searchQuery');
-    const searchButton = document.getElementById('searchButton');
-    
-    const step1 = document.getElementById('step1');
-    const step2 = document.getElementById('step2');
-    const step3 = document.getElementById('step3');
+    // Wait for DOM to be fully loaded
+    document.addEventListener('DOMContentLoaded', function() {
+      console.log("DOM fully loaded, initializing app...");
+      
+      // State variables
+      let currentWebsetId = null;
+      let currentLinkedinUrl = null;
+      
+      // DOM elements
+      const linkedinForm = document.getElementById('linkedinForm');
+      const linkedinCard = document.getElementById('linkedinCard');
+      const linkedinLoading = document.getElementById('linkedinLoading');
+      
+      const goalsForm = document.getElementById('goalsForm');
+      const goalsCard = document.getElementById('goalsCard');
+      
+      const resultsCard = document.getElementById('resultsCard');
+      const resultsContainer = document.getElementById('resultsContainer');
+      const resultsLoading = document.getElementById('resultsLoading');
+      
+      const searchQuery = document.getElementById('searchQuery');
+      const searchButton = document.getElementById('searchButton');
+      
+      const step1 = document.getElementById('step1');
+      const step2 = document.getElementById('step2');
+      const step3 = document.getElementById('step3');
+      
+      // Check if all required elements exist
+      if (!linkedinForm || !linkedinCard) {
+        console.error("Critical DOM elements missing!");
+        return;
+      }
+      
+      console.log("All DOM elements found, setting up event listeners...");
     
     // Handle LinkedIn form submission
     linkedinForm.addEventListener('submit', async (e) => {
@@ -735,10 +773,10 @@ function ui(): Response {
       linkedinLoading.classList.remove('hidden');
       
       // Get form data
-      const linkedinUrl = (document.getElementById('linkedinUrl') as HTMLInputElement).value;
-      const school = (document.getElementById('school') as HTMLInputElement).value;
-      const major = (document.getElementById('major') as HTMLInputElement).value;
-      const gradYear = (document.getElementById('gradYear') as HTMLInputElement).value;
+      const linkedinUrl = document.getElementById('linkedinUrl').value;
+      const school = document.getElementById('school').value;
+      const major = document.getElementById('major').value;
+      const gradYear = document.getElementById('gradYear').value;
       
       console.log("Form data:", { linkedinUrl, school, major, gradYear });
       
@@ -792,10 +830,10 @@ function ui(): Response {
       e.preventDefault();
       
       // Get form data
-      const targetRole = (document.getElementById('targetRole') as HTMLInputElement).value;
-      const targetCompany = (document.getElementById('targetCompany') as HTMLInputElement).value;
-      const targetIndustry = (document.getElementById('targetIndustry') as HTMLInputElement).value;
-      const timeframe = (document.getElementById('timeframe') as HTMLSelectElement).value;
+      const targetRole = document.getElementById('targetRole').value;
+      const targetCompany = document.getElementById('targetCompany').value;
+      const targetIndustry = document.getElementById('targetIndustry').value;
+      const timeframe = document.getElementById('timeframe').value;
       
       try {
         // Submit to API
@@ -884,7 +922,7 @@ function ui(): Response {
                 '<h3>' + (result.title || 'Career Profile') + '</h3>' +
                 '<p><a href="' + result.url + '" target="_blank">' + result.url + '</a></p>' +
                 '<p>' + (result.snippet || '') + '</p>' +
-                '<p class="score">Match Score: ' + Math.round((result.score as number) * 100) + '%</p>';
+                '<p class="score">Match Score: ' + Math.round(result.score * 100) + '%</p>';
               
               resultsContainer.appendChild(resultCard);
             });
@@ -897,6 +935,7 @@ function ui(): Response {
         resultsContainer.innerHTML = '<p>Error searching: ' + error.message + '</p>';
       }
     }
+    }); // End DOMContentLoaded
   </script>
 </body>
 </html>`;

@@ -22,7 +22,11 @@ export default function LinkedInForm({ onComplete }: LinkedInFormProps) {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/linkedin/submit', {
+      const API_URL = import.meta.env.PROD
+        ? 'https://career-paths.zguoliau.workers.dev/api/linkedin/submit'
+        : 'http://localhost:8787/api/linkedin/submit';
+      
+      const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

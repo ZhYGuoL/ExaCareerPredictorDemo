@@ -25,7 +25,11 @@ export default function Results({ websetId }: ResultsProps) {
     setSearchQuery(query || 'similar career paths');
 
     try {
-      const response = await fetch('/api/webset/search', {
+      const API_URL = import.meta.env.PROD
+        ? 'https://career-paths.zguoliau.workers.dev/api/webset/search'
+        : 'http://localhost:8787/api/webset/search';
+      
+      const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

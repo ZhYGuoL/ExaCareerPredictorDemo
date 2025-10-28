@@ -23,7 +23,11 @@ export default function GoalsForm({ onComplete, linkedinUrl }: GoalsFormProps) {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/career-goal/add', {
+      const API_URL = import.meta.env.PROD
+        ? 'https://career-paths.zguoliau.workers.dev/api/career-goal/add'
+        : 'http://localhost:8787/api/career-goal/add';
+      
+      const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
