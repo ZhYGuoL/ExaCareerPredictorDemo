@@ -26,31 +26,50 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // Debug: log incoming method and path
+    console.log(`[ROUTING] Incoming request: ${request.method} ${path}`);
+
     // Handle CORS preflight requests
     if (request.method === 'OPTIONS') {
       return addCorsHeaders(new Response(null, { status: 204 }));
     }
 
-    // Route handling
-    if (path === '/') return ui();
-    if (path === '/api/linkedin/submit') {
-      const response = await handleLinkedinSubmission(request, env);
-      return addCorsHeaders(response);
+    // Route handling - check API routes first, then UI
+    if (path.startsWith('/api/')) {
+      console.log(`[ROUTING] API route detected: ${path}`);
+      
+      if (path === '/api/linkedin/submit') {
+        console.log('[ROUTING] Matched: /api/linkedin/submit');
+        const response = await handleLinkedinSubmission(request, env);
+        return addCorsHeaders(response);
+      }
+      if (path === '/api/webset/search') {
+        console.log('[ROUTING] Matched: /api/webset/search');
+        const response = await handleWebsetSearch(request, env);
+        return addCorsHeaders(response);
+      }
+      if (path.startsWith('/api/career-goal/add')) {
+        console.log(`[ROUTING] Matched: /api/career-goal/add (path: "${path}")`);
+        const response = await handleCareerGoal(request, env);
+        return addCorsHeaders(response);
+      }
+      if (path.startsWith('/api/debug/')) {
+        console.log('[ROUTING] Matched: /api/debug/*');
+        const response = await handleDebug(path, request, env);
+        return addCorsHeaders(response);
+      }
+      
+      console.log(`[ROUTING] No API route matched for: ${path}`);
+      return new Response(`API route not found: ${path}`, { status: 404 });
     }
-    if (path === '/api/webset/search') {
-      const response = await handleWebsetSearch(request, env);
-      return addCorsHeaders(response);
-    }
-    if (path === '/api/career-goal/add') {
-      const response = await handleCareerGoal(request, env);
-      return addCorsHeaders(response);
-    }
-    if (path.startsWith('/api/debug/')) {
-      const response = await handleDebug(path, request, env);
-      return addCorsHeaders(response);
+    
+    if (path === '/') {
+      console.log('[ROUTING] Matched route: / (UI)');
+      return ui();
     }
 
-    return new Response('Not found', { status: 404 });
+    console.log(`[ROUTING] No route matched for: ${path}`);
+    return new Response(`Not found: ${path}`, { status: 404 });
   },
 
   // Queue handler for background tasks
@@ -328,8 +347,11 @@ async function handleWebsetSearch(request: Request, env: Env): Promise<Response>
  * Handle adding a new career goal for a user
  */
 async function handleCareerGoal(request: Request, env: Env): Promise<Response> {
+  console.log('[handleCareerGoal] Function called');
   try {
+    console.log('[handleCareerGoal] Parsing request body...');
     const data = await request.json();
+    console.log('[handleCareerGoal] Request data received:', Object.keys(data));
     const linkedinUrl = data.linkedinUrl as string;
     const role = data.role as string;
     const company = data.company as string | undefined;
