@@ -52,12 +52,35 @@ export function generateUserIdentifier(linkedinUrl: string, profile: UserProfile
 /**
  * Creates a personalized Webset for a user based on their LinkedIn profile
  */ 
-export async function createUserWebset(env: Env, userProfile: UserProfile, linkedinUrl?: string): Promise<any> {
+export async function createUserWebset(env: Env, userProfile: UserProfile, linkedinUrl?: string, explicitQuery?: string): Promise<any> {
   let query: string;
   let criteria: string[];
   
+  // If explicit query is provided, use it (from career goals) and build criteria from experiences
+  if (explicitQuery) {
+    query = explicitQuery;
+    console.log("Using explicit query from career goals:", query);
+    
+    // Build criteria from user's experiences (what they already have)
+    criteria = [];
+    if (userProfile.school) {
+      criteria.push(`Currently enrolled at ${userProfile.school} OR graduated from ${userProfile.school} in ${userProfile.grad_year-1} or ${userProfile.grad_year}`);
+    }
+    if (userProfile.major) {
+      criteria.push(`Studied ${userProfile.major} or a related field`);
+    }
+    if (userProfile.experiences && userProfile.experiences.length > 0) {
+      const companies = userProfile.experiences.map(exp => exp.org).filter(Boolean).slice(0, 3);
+      if (companies.length > 0) {
+        criteria.push(`Has work experience at companies similar to ${companies.join(", ")}`);
+      }
+    }
+    if (userProfile.target_companies && userProfile.target_companies.length > 0) {
+      criteria.push(`Has worked at or has connections to ${userProfile.target_companies.join(", ")}`);
+    }
+  }
   // If LinkedIn URL is provided, process it with Workers AI to generate dynamic query/criteria
-  if (linkedinUrl && env.AI) {
+  else if (linkedinUrl && env.AI) {
     console.log("Processing LinkedIn profile with Workers AI...");
     try {
       const { fetchLinkedinContent, processLinkedinProfile } = await import('./linkedin-processor');
@@ -262,7 +285,12 @@ export async function createUserWebset(env: Env, userProfile: UserProfile, linke
  * Searches for profiles within a user's personalized Webset
  */
 export async function searchUserWebset(env: Env, websetId: string, query: string, filters: any = {}) {
-  console.log(`Searching user Webset ${websetId} for "${query}"...`);
+  console.log("=".repeat(80));
+  console.log("🔍 SEARCHING USER WEBSET");
+  console.log("=".repeat(80));
+  console.log(`Webset ID: ${websetId}`);
+  console.log(`Query: ${query}`);
+  console.log(`Filters: ${JSON.stringify(filters)}`);
   
   try {
     // Execute search against the user's personalized Webset
@@ -300,14 +328,18 @@ export async function searchUserWebset(env: Env, websetId: string, query: string
       body: JSON.stringify(requestBody),
     });
 
+    console.log(`Search response status: ${searchResponse.status}`);
+
     if (!searchResponse.ok) {
       const errorText = await searchResponse.text();
-      console.error(`Webset search error: Status ${searchResponse.status}, ${errorText}`);
+      console.error(`❌ Webset search error: Status ${searchResponse.status}`);
+      console.error(`Error text: ${errorText}`);
       throw new Error(`Webset search error: ${errorText}`);
     }
 
     const results = await searchResponse.json();
-    console.log(`Found ${(results as any).results?.length || 0} results in user Webset ${websetId}`);
+    console.log(`✅ Search successful - found ${(results as any).results?.length || 0} results`);
+    console.log("Results structure:", JSON.stringify(results).substring(0, 500));
     
     // Make sure we have a consistent response format even if the API returns something unexpected
     if (!results || !Array.isArray((results as any).results)) {

@@ -131,77 +131,54 @@ async function handleLinkedinSubmission(request: Request, env: Env): Promise<Res
       });
     }
     
-    // Create basic user profile with provided information
-    const userProfile: UserProfile = {
-      school,
-      major,
-      grad_year: parseInt(gradYear),
-      experiences: []
-    };
-    
-    // Create a new Webset for this user
-    console.log("Creating user Webset with profile:", JSON.stringify(userProfile));
-    console.log("LinkedIn URL:", normalizedUrl);
+    // Store basic profile data in linkedin_profiles table (no Webset created yet)
+    console.log("Storing LinkedIn profile for later Webset creation:", normalizedUrl);
     
     try {
-      const websetResult = await createUserWebset(env, userProfile, normalizedUrl);
-      console.log("Webset creation result:", websetResult);
+      await env.DB.prepare(`
+        INSERT INTO linkedin_profiles
+        (linkedin_url, full_name, headline, profile_data, extracted_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (linkedin_url) DO UPDATE SET
+        headline = excluded.headline,
+        profile_data = excluded.profile_data,
+        extracted_at = excluded.extracted_at
+      `).bind(
+        normalizedUrl,
+        `${school} - ${major}`,
+        `Student at ${school}`,
+        JSON.stringify({ school, major, gradYear }),
+        new Date().toISOString()
+      ).run();
       
-      if (!websetResult || !websetResult.id) {
-        console.error("Webset result is missing ID:", websetResult);
-        return new Response(JSON.stringify({
-          error: 'Failed to create Webset'
-        }), { 
-          status: 500, 
-          headers: { 'Content-Type': 'application/json' } 
-        });
-      }
+      console.log("LinkedIn profile stored successfully with normalized URL:", normalizedUrl);
       
-      // Store the Webset ID in our database
-      console.log("Storing Webset ID in database:", websetResult.id);
+      // Verify the profile was stored
+      const verifyProfile = await env.DB.prepare(
+        'SELECT linkedin_url FROM linkedin_profiles WHERE linkedin_url = ?'
+      ).bind(normalizedUrl).first();
+      console.log("Verification query result:", verifyProfile ? "Confirmed stored" : "NOT stored!");
       
-      try {
-        await env.DB.prepare(`
-          INSERT INTO user_websets 
-          (linkedin_url, linkedin_hash, webset_id, webset_external_id, user_school, user_major, user_grad_year, created_at) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-          normalizedUrl,
-          urlHash,
-          websetResult.id,
-          websetResult.externalId || generateUserIdentifier(normalizedUrl, userProfile),
-          school,
-          major,
-          gradYear,
-          new Date().toISOString()
-        ).run();
-        
-        console.log("Database insert successful");
-        
-        // Queue the LinkedIn profile extraction as a background task
-        await env.INGEST_QUEUE.send(JSON.stringify({
-          type: 'extract_linkedin',
-          url: normalizedUrl
-        }));
-        
-        console.log("LinkedIn extraction queued");
-      } catch (dbError) {
-        console.error("Database error:", dbError);
-        // Continue despite database error - we can still return the webset ID to the client
-      }
+      // Queue the LinkedIn profile extraction to get experiences
+      await env.INGEST_QUEUE.send(JSON.stringify({
+        type: 'extract_linkedin',
+        url: normalizedUrl
+      }));
+      
+      console.log("LinkedIn extraction queued");
       
       return new Response(JSON.stringify({
-        status: 'created',
-        websetId: websetResult.id,
-        message: 'Webset created successfully and profile extraction queued'
+        status: 'profile_stored',
+        linkedinUrl: normalizedUrl,
+        message: 'Profile stored. Please define your career goals to create your personalized Webset.'
       }), { 
         headers: { 'Content-Type': 'application/json' } 
       });
       
-    } catch (websetError) {
-      console.error("Error creating Webset:", websetError);
+    } catch (dbError) {
+      console.error("Database error:", dbError);
       return new Response(JSON.stringify({
-        error: 'Failed to create Webset: ' + (websetError instanceof Error ? websetError.message : String(websetError))
+        error: 'Failed to store profile: ' + (dbError instanceof Error ? dbError.message : String(dbError))
       }), { 
         status: 500, 
         headers: { 'Content-Type': 'application/json' } 
@@ -336,8 +313,10 @@ async function handleWebsetSearch(request: Request, env: Env): Promise<Response>
     
   } catch (error) {
     console.error('Webset search error:', error);
+    console.error('Error details:', error instanceof Error ? error.message : String(error));
+    console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace');
     return new Response(JSON.stringify({ 
-      error: 'Failed to search Webset'
+      error: 'Failed to search Webset: ' + (error instanceof Error ? error.message : String(error))
     }), { 
       status: 500, 
       headers: { 'Content-Type': 'application/json' } 
@@ -368,53 +347,103 @@ async function handleCareerGoal(request: Request, env: Env): Promise<Response> {
     
     // Normalize the LinkedIn URL
     const normalizedUrl = normalizeLinkedinUrl(linkedinUrl);
+    console.log("Career goals handler - Looking for LinkedIn profile with URL:", normalizedUrl);
     
-    // Get the user record
-    const userRecord = await env.DB.prepare(
-      'SELECT * FROM user_websets WHERE linkedin_url = ?'
+    // Get the LinkedIn profile with experiences
+    const linkedinProfile = await env.DB.prepare(
+      'SELECT * FROM linkedin_profiles WHERE linkedin_url = ?'
     ).bind(normalizedUrl).first();
     
-    if (!userRecord) {
+    console.log("LinkedIn profile query result:", linkedinProfile ? "Found" : "Not found");
+    
+    if (!linkedinProfile) {
+      // Debug: Check what profiles exist in the database
+      const allProfiles = await env.DB.prepare(
+        'SELECT linkedin_url FROM linkedin_profiles LIMIT 10'
+      ).all();
+      console.log("Available profiles in database:", allProfiles);
+      
       return new Response(JSON.stringify({ 
-        error: 'User not found' 
+        error: 'LinkedIn profile not found. Please submit your LinkedIn profile first.' 
       }), { 
         status: 404, 
         headers: { 'Content-Type': 'application/json' } 
       });
     }
     
-    // Save the career goal
-    await env.DB.prepare(`
-      INSERT INTO user_career_goals
-      (linkedin_url, target_role, target_company, target_industry, timeframe, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(
-      normalizedUrl,
-      role,
-      company || null,
-      industry || null,
-      timeframe || null,
-      new Date().toISOString()
-    ).run();
+    // Parse the profile data
+    const profileData = JSON.parse(linkedinProfile.profile_data || '{}');
     
-    // Update the user's Webset with the new target company
-    if (company) {
-      await env.INGEST_QUEUE.send(JSON.stringify({
-        type: 'update_webset',
-        websetId: userRecord.webset_id,
-        profile: {
-          target_companies: [company]
-        }
-      }));
+    // Build user profile for Webset creation
+    const userProfile: UserProfile = {
+      school: profileData.school || '',
+      major: profileData.major || '',
+      grad_year: profileData.gradYear || profileData.grad_year || 2024,
+      experiences: profileData.experiences || [],
+      target_companies: company ? [company] : []
+    };
+    
+    // Build query from career goals (what they want to achieve)
+    const query = `Looking for professionals who have achieved or are working toward: ${role}${company ? ` at ${company}` : ''}${industry ? ` in the ${industry} industry` : ''}`;
+    
+    console.log("Creating Webset with career goals as query and experiences as criteria");
+    console.log("Query (career goals):", query);
+    
+    // Create the Webset with the query (career goals) and criteria (their experiences)
+    try {
+      const websetResult = await createUserWebset(env, userProfile, normalizedUrl, query);
+      
+      if (!websetResult || !websetResult.id) {
+        throw new Error('Failed to create Webset');
+      }
+      
+      // Store the Webset ID and career goal
+      await env.DB.prepare(`
+        INSERT INTO user_websets 
+        (linkedin_url, linkedin_hash, webset_id, webset_external_id, user_school, user_major, user_grad_year, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        normalizedUrl,
+        await generateUrlHash(normalizedUrl),
+        websetResult.id,
+        websetResult.externalId || generateUserIdentifier(profileData.school + profileData.major, userProfile),
+        profileData.school || '',
+        profileData.major || '',
+        profileData.gradYear || profileData.grad_year || 2024,
+        new Date().toISOString()
+      ).run();
+      
+      // Save the career goal
+      await env.DB.prepare(`
+        INSERT INTO user_career_goals
+        (linkedin_url, target_role, target_company, target_industry, timeframe, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).bind(
+        normalizedUrl,
+        role,
+        company || null,
+        industry || null,
+        timeframe || null,
+        new Date().toISOString()
+      ).run();
+      
+      return new Response(JSON.stringify({
+        status: 'success',
+        websetId: websetResult.id,
+        message: 'Webset created successfully with your career goals and experiences'
+      }), { 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+      
+    } catch (websetError) {
+      console.error("Error creating Webset from career goals:", websetError);
+      return new Response(JSON.stringify({
+        error: 'Failed to create Webset: ' + (websetError instanceof Error ? websetError.message : String(websetError))
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
-    
-    // Return success response
-    return new Response(JSON.stringify({
-      status: 'success',
-      message: 'Career goal added successfully'
-    }), { 
-      headers: { 'Content-Type': 'application/json' } 
-    });
     
   } catch (error) {
     console.error('Career goal error:', error);
@@ -798,9 +827,9 @@ function ui(): Response {
         
         if (response.ok) {
           console.log("LinkedIn submission successful");
-          // Save webset ID for later use
-          currentWebsetId = data.websetId;
-          currentLinkedinUrl = linkedinUrl;
+          // Save LinkedIn URL for later use (no webset ID yet, will be created with career goals)
+          currentLinkedinUrl = data.linkedinUrl || linkedinUrl;
+          console.log("Stored LinkedIn URL:", currentLinkedinUrl);
           
           // Update step indicators
           step1.classList.remove('active');
@@ -855,6 +884,11 @@ function ui(): Response {
         const data = await response.json();
         
         if (response.ok) {
+          console.log("Career goals submission successful");
+          // Save webset ID (created with career goals)
+          currentWebsetId = data.websetId;
+          console.log("Stored Webset ID:", currentWebsetId);
+          
           // Update step indicators
           step2.classList.remove('active');
           step2.classList.add('completed');
@@ -908,6 +942,9 @@ function ui(): Response {
         // Hide loading indicator
         resultsLoading.classList.add('hidden');
         
+        console.log("Search response status:", response.status);
+        console.log("Search response data:", data);
+        
         if (response.ok && data.results) {
           // Display results
           if (data.results.length === 0) {
@@ -929,7 +966,8 @@ function ui(): Response {
             });
           }
         } else {
-          resultsContainer.innerHTML = '<p>Error loading results. Please try again.</p>';
+          console.error("Search failed:", data.error || data);
+          resultsContainer.innerHTML = '<p>Error loading results: ' + (data.error || 'Unknown error') + '</p>';
         }
       } catch (error) {
         resultsLoading.classList.add('hidden');
